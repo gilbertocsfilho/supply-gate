@@ -66,16 +66,16 @@ Se os valores de proxy estiverem ausentes, inválidos ou apontando para placehol
 
 ## Estrutura do repositório
 
-- [install.sh](/Users/jpcbl/petuti-code/supply-gate/install.sh): entrypoint principal.
-- [policy/default-policy.conf](/Users/jpcbl/petuti-code/supply-gate/policy/default-policy.conf): policy declarativa.
-- [lib/common.sh](/Users/jpcbl/petuti-code/supply-gate/lib/common.sh): runtime compartilhado.
-- [shims/manager-wrapper.sh](/Users/jpcbl/petuti-code/supply-gate/shims/manager-wrapper.sh): enforcement de wrappers.
-- [scripts/windows-apply.ps1](/Users/jpcbl/petuti-code/supply-gate/scripts/windows-apply.ps1): integração nativa com Windows.
-- [fleet/osquery](/Users/jpcbl/petuti-code/supply-gate/fleet/osquery): templates de compliance para FleetDM/osquery.
-- [GUIDE.md](/Users/jpcbl/petuti-code/supply-gate/GUIDE.md): guideline ampliado de boas práticas.
-- [docs/internal-proxies.md](/Users/jpcbl/petuti-code/supply-gate/docs/internal-proxies.md): guia detalhado de proxies internos.
-- [docs/prescriptive-proxy-stack.md](/Users/jpcbl/petuti-code/supply-gate/docs/prescriptive-proxy-stack.md): stack prescritiva recomendada para implantação real.
-- [docker/README.md](/Users/jpcbl/petuti-code/supply-gate/docker/README.md): como subir a stack prescritiva com Docker Compose.
+- [install.sh](install.sh): entrypoint principal.
+- [policy/default-policy.conf](policy/default-policy.conf): policy declarativa.
+- [lib/common.sh](lib/common.sh): runtime compartilhado.
+- [shims/manager-wrapper.sh](shims/manager-wrapper.sh): enforcement de wrappers.
+- [scripts/windows-apply.ps1](scripts/windows-apply.ps1): integração nativa com Windows.
+- [fleet/osquery](fleet/osquery): templates de compliance para FleetDM/osquery.
+- [GUIDE.md](GUIDE.md): guideline ampliado de boas práticas.
+- [docs/internal-proxies.md](docs/internal-proxies.md): guia detalhado de proxies internos.
+- [docs/prescriptive-proxy-stack.md](docs/prescriptive-proxy-stack.md): stack prescritiva recomendada para implantação real.
+- [docker/README.md](docker/README.md): como subir a stack prescritiva com Docker Compose.
 
 ## Como funciona
 
@@ -139,7 +139,7 @@ O comando `audit` valida:
 
 ### Modo `hard`
 
-Antes, ajuste [policy/default-policy.conf](/Users/jpcbl/petuti-code/supply-gate/policy/default-policy.conf) com seus registries reais.
+Antes, ajuste [policy/default-policy.conf](policy/default-policy.conf) com seus registries reais.
 
 Depois:
 
@@ -175,7 +175,7 @@ Remover:
 
 ## Configuração da policy
 
-A policy padrão fica em [policy/default-policy.conf](/Users/jpcbl/petuti-code/supply-gate/policy/default-policy.conf).
+A policy padrão fica em [policy/default-policy.conf](policy/default-policy.conf).
 
 Parâmetros mais importantes:
 
@@ -204,7 +204,7 @@ Isso é intencional.
 
 ## FleetDM / osquery
 
-Os arquivos em [fleet/osquery](/Users/jpcbl/petuti-code/supply-gate/fleet/osquery) são templates iniciais para:
+Os arquivos em [fleet/osquery](fleet/osquery) são templates iniciais para:
 
 - verificar existência de runtime;
 - validar hashes de arquivos críticos;

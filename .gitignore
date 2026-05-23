@@ -1,0 +1,19 @@
+.DS_Store
+.env
+.env.local
+.env.*.local
+*.log
+*.jsonl
+*.tmp
+*.swp
+
+# Local runtime and audit artifacts
+runtime/
+logs/
+attestation/
+shims-bin/
+
+# Dependency and build artifacts
+node_modules/
+dist/
+build/

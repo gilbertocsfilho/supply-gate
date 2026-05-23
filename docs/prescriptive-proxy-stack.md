@@ -438,7 +438,7 @@ Para times de maior criticidade:
 
 ### Policy recomendada
 
-Edite [policy/default-policy.conf](/Users/jpcbl/petuti-code/supply-gate/policy/default-policy.conf):
+Edite [policy/default-policy.conf](../policy/default-policy.conf):
 
 ```sh
 DEFAULT_MODE="hard"
