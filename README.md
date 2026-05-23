@@ -2,7 +2,7 @@
 
 `Supply Gate` e o nome do projeto. Alguns caminhos, marcadores e identificadores de runtime ainda usam o nome legado `supply-chain-protect` por compatibilidade com a implementacao atual.
 
-Para customizacao local sem sujar o git, mantenha os defaults em `policy/default-policy.conf` e coloque overrides da sua maquina em `policy/local-policy.conf`, que e ignorado pelo repositório.
+Para customizacao local sem sujar o git, mantenha os defaults em `policy/default-policy.conf` e coloque overrides da sua maquina em `policy/local-policy.conf`, que e ignorado pelo repositorio. Use `policy/local-policy.example.conf` como ponto de partida.
 
 Ferramenta de hardening local para reduzir risco de ataques de supply chain em estações de desenvolvimento e ambientes de automação.
 
@@ -180,6 +180,12 @@ Remover:
 A policy padrão fica em [policy/default-policy.conf](policy/default-policy.conf).
 
 Overrides locais opcionais podem ser colocados em `policy/local-policy.conf`. Esse arquivo sobrescreve apenas os valores que voce definir nele e fica ignorado pelo git.
+
+Para criar seu override local:
+
+```sh
+cp policy/local-policy.example.conf policy/local-policy.conf
+```
 
 Parâmetros mais importantes:
 
