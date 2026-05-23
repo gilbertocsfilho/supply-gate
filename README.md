@@ -160,6 +160,32 @@ In this flow:
 - `Supply Gate` still governs the package manager call that actually runs
 - logs and local enforcement remain with `Supply Gate`
 
+### Transparent `scfw` Layer
+
+If `scfw` is installed, `Supply Gate` can invoke it transparently for supported install flows.
+
+Current default behavior:
+
+- enabled by `SCFW_AUTO_WRAP="1"`
+- active for `npm`, `pip`, and `poetry`
+- only applied to install-like commands
+
+Examples that are transparently routed through `scfw` when available:
+
+```sh
+npm install lodash
+pip install requests
+poetry add requests
+```
+
+Commands outside that scope still run directly through the normal `Supply Gate` wrapper path.
+
+If you want to disable transparent `scfw` wrapping, set this in `policy/local-policy.conf`:
+
+```sh
+SCFW_AUTO_WRAP="0"
+```
+
 ### Practical Usage Pattern
 
 Baseline the machine:

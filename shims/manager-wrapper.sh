@@ -96,6 +96,50 @@ run_package_manager() {
       ;;
   esac
 
+  should_run_via_scfw() {
+    first_arg=${1:-}
+
+    [ "${SCFW_AUTO_WRAP:-1}" = "1" ] || return 1
+    [ "${SCP_IN_SCFW:-0}" != "1" ] || return 1
+    command -v scfw >/dev/null 2>&1 || return 1
+
+    case " ${SCFW_MANAGED_TOOLS:-} " in
+      *" $tool "*) ;;
+      *) return 1 ;;
+    esac
+
+    case "$tool" in
+      npm)
+        case "$first_arg" in
+          install|i|update|up) return 0 ;;
+        esac
+        ;;
+      pip)
+        case "$first_arg" in
+          install) return 0 ;;
+        esac
+        ;;
+      poetry)
+        case "$first_arg" in
+          add|install|update) return 0 ;;
+        esac
+        ;;
+    esac
+
+    return 1
+  }
+
+  run_via_scfw() {
+    log_info "Delegating through scfw with real binary: $real_bin"
+    log_json_event "INFO" "command.allowed" "$tool" "$command_text" "started" "delegating through scfw"
+    SCP_IN_SCFW=1 scfw run --executable "$real_bin" "$tool" "$@"
+  }
+
+  if should_run_via_scfw "$@"; then
+    run_via_scfw "$@"
+    return 0
+  fi
+
   log_info "Delegating to real binary: $real_bin"
   log_json_event "INFO" "command.allowed" "$tool" "$command_text" "started" "delegating to real binary"
   "$real_bin" "$@"
