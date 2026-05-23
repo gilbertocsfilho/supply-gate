@@ -12,6 +12,9 @@ runtime/
 logs/
 attestation/
 shims-bin/
+policy/local-policy.conf
+policy.conf
+.ai-jail
 
 # Dependency and build artifacts
 node_modules/

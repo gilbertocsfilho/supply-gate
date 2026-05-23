@@ -6,10 +6,6 @@ CALLER_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 if [ -n "${SCP_POLICY_FILE:-}" ]; then
   POLICY_FILE=$SCP_POLICY_FILE
-elif [ -f "$CALLER_DIR/policy/default-policy.conf" ]; then
-  POLICY_FILE="$CALLER_DIR/policy/default-policy.conf"
-elif [ -f "$CALLER_DIR/policy.conf" ]; then
-  POLICY_FILE="$CALLER_DIR/policy.conf"
 else
   POLICY_FILE="$CALLER_DIR/policy/default-policy.conf"
 fi
@@ -21,6 +17,20 @@ fi
 
 # shellcheck disable=SC1090
 . "$POLICY_FILE"
+
+LOCAL_POLICY_FILE=""
+if [ -z "${SCP_POLICY_FILE:-}" ]; then
+  if [ -f "$CALLER_DIR/policy/local-policy.conf" ]; then
+    LOCAL_POLICY_FILE="$CALLER_DIR/policy/local-policy.conf"
+  elif [ -f "$CALLER_DIR/policy.conf" ]; then
+    LOCAL_POLICY_FILE="$CALLER_DIR/policy.conf"
+  fi
+fi
+
+if [ -n "$LOCAL_POLICY_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$LOCAL_POLICY_FILE"
+fi
 
 detect_platform() {
   case "$(uname -s 2>/dev/null || echo unknown)" in
