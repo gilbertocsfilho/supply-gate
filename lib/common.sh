@@ -6,6 +6,8 @@ CALLER_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 if [ -n "${SCP_POLICY_FILE:-}" ]; then
   POLICY_FILE=$SCP_POLICY_FILE
+elif [ -f "$CALLER_DIR/policy.conf" ]; then
+  POLICY_FILE="$CALLER_DIR/policy.conf"
 else
   POLICY_FILE="$CALLER_DIR/policy/default-policy.conf"
 fi
@@ -19,7 +21,7 @@ fi
 . "$POLICY_FILE"
 
 LOCAL_POLICY_FILE=""
-if [ -z "${SCP_POLICY_FILE:-}" ]; then
+if [ -z "${SCP_POLICY_FILE:-}" ] && [ "$POLICY_FILE" = "$CALLER_DIR/policy/default-policy.conf" ]; then
   if [ -f "$CALLER_DIR/policy/local-policy.conf" ]; then
     LOCAL_POLICY_FILE="$CALLER_DIR/policy/local-policy.conf"
   elif [ -f "$CALLER_DIR/policy.conf" ]; then
@@ -251,6 +253,27 @@ find_real_binary() {
   done
   IFS=$old_ifs
   return 1
+}
+
+resolve_real_binary() {
+  tool=$1
+  if ! candidate=$(find_real_binary "$tool" 2>/dev/null); then
+    return 1
+  fi
+
+  case "$candidate" in
+    */.asdf/shims/*)
+      if command -v asdf >/dev/null 2>&1; then
+        resolved=$(asdf which "$tool" 2>/dev/null || true)
+        if [ -n "$resolved" ] && [ -x "$resolved" ]; then
+          printf '%s\n' "$resolved"
+          return 0
+        fi
+      fi
+      ;;
+  esac
+
+  printf '%s\n' "$candidate"
 }
 
 list_detected_tools() {

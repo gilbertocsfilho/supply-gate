@@ -1,37 +1,22 @@
 # Supply Gate
 
-`Supply Gate` e o nome do projeto. Alguns caminhos, marcadores e identificadores de runtime ainda usam o nome legado `supply-chain-protect` por compatibilidade com a implementacao atual.
+Supply Gate is a local hardening layer for developer workstations and automation environments. It helps enforce safer dependency installation and AI CLI usage with a policy-driven workflow.
 
-Para customizacao local sem sujar o git, mantenha os defaults em `policy/default-policy.conf` e coloque overrides da sua maquina em `policy/local-policy.conf`, que e ignorado pelo repositorio. Use `policy/local-policy.example.conf` como ponto de partida.
+Use it when you want to reduce common supply chain bypass paths such as:
 
-Ferramenta de hardening local para reduzir risco de ataques de supply chain em estações de desenvolvimento e ambientes de automação.
+- direct package manager usage outside policy
+- inconsistent local configuration across machines
+- missing audit trail for installs and updates
+- AI CLI execution without a configured sandbox or jail
 
-Ela aplica uma camada obrigatória de:
+## What It Does
 
-- wrappers por precedência de `PATH`;
-- policy `soft` ou `hard`;
-- logging em `STDOUT` e em arquivos persistentes;
-- auditoria local de compliance;
-- enforcement para gerenciadores de pacote e CLIs de IA.
+- Applies local policy in `soft` or `hard` mode
+- Wraps supported package managers and AI CLIs
+- Records local audit evidence and execution logs
+- Supports optional local tooling such as `scfw` and `bumblebee` without making them mandatory
 
-## Objetivo
-
-O software existe para fechar os caminhos mais comuns de bypass em instalações de dependências e uso de ferramentas sensíveis.
-
-Ele protege especialmente contra:
-
-- uso direto de package managers fora da policy;
-- drift em arquivos de configuração;
-- ausência de lock discipline;
-- instalações feitas sem trilha de auditoria;
-- uso de CLIs de IA fora de jail;
-- inconsistência de configuração entre máquinas.
-
-No modo `hard`, também força o uso de proxies/registries corporativos.
-
-## Comandos suportados
-
-Atualmente a camada de wrapper cobre:
+Supported commands today:
 
 - `npm`
 - `pnpm`
@@ -46,280 +31,205 @@ Atualmente a camada de wrapper cobre:
 - `gemini`
 - `codex`
 
-## Modos de operação
+## Operating Modes
 
 ### `soft`
 
-Aplica hardening local sem exigir proxy central.
-
-Inclui:
-
-- wrappers obrigatórios;
-- configs locais gerenciadas;
-- logging por execução;
-- `audit` local;
-- fail-closed para CLIs de IA sem jail configurada.
+Use `soft` mode when you want local enforcement without requiring corporate registries or proxies.
 
 ### `hard`
 
-Aplica tudo do modo `soft` e exige proxies/registries corporativos.
+Use `hard` mode when you want local enforcement plus mandatory corporate registries or proxies. This mode is intended for environments that already have those services available.
 
-Se os valores de proxy estiverem ausentes, inválidos ou apontando para placeholders, a aplicação da policy falha.
+## Quick Start
 
-## Estrutura do repositório
-
-- [install.sh](install.sh): entrypoint principal.
-- [policy/default-policy.conf](policy/default-policy.conf): policy declarativa.
-- [lib/common.sh](lib/common.sh): runtime compartilhado.
-- [shims/manager-wrapper.sh](shims/manager-wrapper.sh): enforcement de wrappers.
-- [scripts/windows-apply.ps1](scripts/windows-apply.ps1): integração nativa com Windows.
-- [fleet/osquery](fleet/osquery): templates de compliance para FleetDM/osquery.
-- [GUIDE.md](GUIDE.md): guideline ampliado de boas práticas.
-- [docs/internal-proxies.md](docs/internal-proxies.md): guia detalhado de proxies internos.
-- [docs/prescriptive-proxy-stack.md](docs/prescriptive-proxy-stack.md): stack prescritiva recomendada para implantação real.
-- [docker/README.md](docker/README.md): como subir a stack prescritiva com Docker Compose.
-
-## Como funciona
-
-### 1. Wrappers
-
-O instalador cria um diretório de shims e coloca esse diretório antes do restante do `PATH`.
-
-Cada comando protegido passa pelo wrapper, que:
-
-- identifica o binário real;
-- carrega a policy ativa;
-- aplica variáveis/configurações de ambiente;
-- registra logs;
-- decide se permite, bloqueia ou exige jail.
-
-### 2. Logging
-
-Cada execução gera:
-
-- saída legível no terminal;
-- arquivo de log por rodada;
-- evento agregado em `JSONL`.
-
-No macOS/Linux os artefatos ficam em:
-
-```text
-~/.local/share/supply-chain-protect/
-```
-
-No Windows:
-
-```text
-%LOCALAPPDATA%\SupplyChainProtect\
-```
-
-Principais subdiretórios:
-
-- `logs/`
-- `runtime/`
-- `shims/`
-- `attestation/`
-
-### 3. Auditoria
-
-O comando `audit` valida:
-
-- runtime instalado;
-- shims presentes;
-- blocos gerenciados nos perfis;
-- arquivos de config gerenciados;
-- integridade básica do estado local;
-- drift de `hard mode` em `go` e policy.
-
-## Instalação
-
-### Modo `soft`
+Apply the default local policy:
 
 ```sh
 ./install.sh apply --mode soft
 ```
 
-### Modo `hard`
+Reload your shell, then verify:
 
-Antes, ajuste [policy/default-policy.conf](policy/default-policy.conf) com seus registries reais.
+```sh
+source ~/.zshrc
+./install.sh audit
+```
 
-Depois:
+If you want `hard` mode, first customize the policy values and then apply:
 
 ```sh
 ./install.sh apply --mode hard
 ```
 
-## Operação
+## Common Commands
 
-Aplicar:
+Apply:
 
 ```sh
 ./install.sh apply --mode soft
 ```
 
-Auditar:
+Audit:
 
 ```sh
 ./install.sh audit
 ```
 
-Reparar:
+Repair:
 
 ```sh
 ./install.sh repair
 ```
 
-Remover:
+Uninstall:
 
 ```sh
 ./install.sh uninstall
 ```
 
-## Configuração da policy
+## Local Policy Overrides
 
-A policy padrão fica em [policy/default-policy.conf](policy/default-policy.conf).
+Keep shared defaults in [policy/default-policy.conf](policy/default-policy.conf).
 
-Overrides locais opcionais podem ser colocados em `policy/local-policy.conf`. Esse arquivo sobrescreve apenas os valores que voce definir nele e fica ignorado pelo git.
-
-Para criar seu override local:
+For machine-specific settings, create a local override file that is ignored by git:
 
 ```sh
 cp policy/local-policy.example.conf policy/local-policy.conf
 ```
 
-Parâmetros mais importantes:
+Typical local overrides include:
 
-- `DEFAULT_MODE`
-- `MANAGED_COMMANDS`
-- `NPM_REGISTRY_URL`
-- `PYTHON_INDEX_URL`
-- `CARGO_REGISTRY_URL`
-- `GO_PROXY_URL`
-- `GO_SUMDB`
-- `GO_PRIVATE_PATTERNS`
-- `GO_NO_SUMDB_PATTERNS`
-- `GO_VCS_RULES`
-- `AI_JAIL_BACKEND_MACLINUX`
-- `AI_JAIL_BACKEND_WINDOWS`
 - `AI_JAIL_LAUNCHER_MACLINUX`
-- `AI_JAIL_LAUNCHER_WINDOWS`
+- internal registry URLs for `hard` mode
+- machine-specific install or config roots
 
-## CLIs de IA e jail
+## Optional Tools
 
-`claude`, `gemini` e `codex` são tratados como comandos sensíveis.
+Optional tools are intentionally kept outside `apply`.
 
-Sem launcher configurado para o backend de jail, o wrapper bloqueia a execução.
+Install all supported optional tools:
 
-Isso é intencional.
+```sh
+./install.sh install-optional-tools --all
+```
 
-## FleetDM / osquery
+Or install them individually:
 
-Os arquivos em [fleet/osquery](fleet/osquery) são templates iniciais para:
+```sh
+./install.sh install-optional-tools --scfw
+./install.sh install-optional-tools --bumblebee
+```
 
-- verificar existência de runtime;
-- validar hashes de arquivos críticos;
-- detectar execução de binários sensíveis;
-- diferenciar `soft` e `hard` no backend de compliance.
+Current behavior:
 
-## Inventário e Incident Response
+- `scfw` is installed via `pipx` when supported
+- `bumblebee` is installed via `go install github.com/perplexityai/bumblebee/cmd/bumblebee@v0.1.1`
+- Windows is handled as `skip` for tools whose upstream support is not available
+- missing optional tools do not block `apply`, `audit`, or `repair`
 
-Este projeto nao tenta ser um scanner universal de estado do endpoint.
+If `bumblebee` installation fails, verify your Go version first. The current upstream install path requires Go 1.25 or newer.
 
-O foco continua sendo:
+## Working With `scfw` And `bumblebee`
 
-- prevencao local;
-- enforcement por wrapper;
-- policy de `soft`/`hard`;
-- proxy/registry em `hard mode`;
-- auditoria local e deteccao de drift.
+Use the three layers together, but with different roles:
 
-Para inventario read-only e exposure hunting no endpoint, o encaixe recomendado e usar uma ferramenta complementar como `perplexityai/bumblebee`, sem acoplar seu ciclo de vida ao fluxo principal deste repositorio.
+- `Supply Gate`: local enforcement and audit trail
+- `scfw`: install-time package screening
+- `bumblebee`: endpoint inventory and exposure scan
 
-### Divisao de responsabilidade
+The expected workflow is layered, not a single combined command.
 
-- `Supply Gate` previne, bloqueia e força policy no momento de execucao.
-- proxies internos controlam origem, cache e trilha central de downloads.
-- `FleetDM`/`osquery` ajudam a detectar drift, bypass e estado persistente.
-- `bumblebee` entra como camada opcional de inventario local e busca de exposicao conhecida.
+### Daily Dependency Workflow
 
-### O que o Bumblebee agrega
+1. Keep `Supply Gate` applied on the machine.
+2. Run dependency installs through `scfw`.
+3. Let `Supply Gate` intercept the underlying package manager.
+4. Use `bumblebee` separately for periodic inventory or incident response.
 
-- varredura periodica de workstations Linux/macOS;
-- inventario de superficies que este projeto nao observa profundamente hoje;
-- campanhas de incidente para localizar pacote, extensao ou config comprometida ja presente no disco;
-- leitura de configuracoes MCP em JSON e outros artefatos locais relevantes para exposure scan.
+Example:
 
-### O que ele nao substitui
+```sh
+scfw run npm install lodash
+scfw run pip install requests
+```
 
-- wrappers;
-- proxy corporativo;
-- `audit`, `apply` ou `repair`;
-- telemetria de processo em tempo real;
-- enforcement de CLIs de IA ou de package managers.
+In this flow:
 
-### Stack recomendado por camada
+- `scfw` evaluates the package before or during installation
+- `Supply Gate` still governs the package manager call that actually runs
+- logs and local enforcement remain with `Supply Gate`
 
-1. `Supply Gate` para prevencao e enforcement local.
-2. proxies internos para controle de origem.
-3. `FleetDM`/`osquery` para drift e bypass detection.
-4. `bumblebee` para inventario endpoint-side e incident response.
+### Practical Usage Pattern
 
-### Modelo operacional sugerido
+Baseline the machine:
 
-- `baseline` diario para inventario leve de workstation;
-- `project` para roots conhecidos de desenvolvimento;
-- `deep` apenas em incidente ou campanha de exposure hunting;
-- preferir saida em arquivo `NDJSON` ou `POST` HTTP para relay interno;
-- correlacionar resultados com `events.jsonl`, sinais de bypass no `FleetDM`/`osquery` e logs de proxy.
+```sh
+./install.sh apply --mode soft
+./install.sh audit
+```
 
-### Limitacoes e cautelas desta avaliacao
+Install dependencies with screening:
 
-Esta recomendacao assume uma avaliacao de encaixe feita em 23 de maio de 2026, considerando o estado do `bumblebee` `v0.1.1`, publicado em 22 de maio de 2026.
+```sh
+scfw run npm install <package>
+scfw run pip install <package>
+```
 
-- cobertura declarada para Linux/macOS, nao Windows;
-- projeto ainda novo nesta avaliacao;
-- sem spool/queue local;
-- modo `deep` nao deve ser tratado como fonte permanente de "current state";
-- cobertura MCP parcial para `codex`, porque a leitura de `config.toml` nao entra nessa avaliacao inicial.
+Run local compliance checks:
 
-### O que nao fazer
+```sh
+./install.sh audit
+```
 
-- nao tornar `bumblebee` dependencia obrigatoria do `install.sh`;
-- nao falhar `apply`, `audit` ou `repair` pela ausencia dele;
-- nao tratar inventario read-only como substituto de enforcement.
+Run periodic endpoint visibility scans:
 
-## Limitações atuais
+```sh
+bumblebee --help
+```
 
-- O modo `hard` depende de proxies/registries corporativos reais.
-- O enforcement de jail no Windows depende da configuração do backend escolhido.
-- A auditoria atual é local e baseada em arquivos/processos; não substitui telemetria central.
-- Nem todo ecossistema permite o mesmo nível de bloqueio apenas com configuração local.
+### Recommended Team Workflow
 
-## Recomendações de rollout
+- Day-to-day installs: use `scfw run ...`
+- Local enforcement: keep `Supply Gate` active on the workstation
+- Drift checks: run `./install.sh audit`
+- Incident response or exposure hunting: run `bumblebee` scans outside the install flow
 
-Ordem sugerida:
+### Important Boundaries
 
-1. Ajustar a policy para a sua organização.
-2. Implantar em `soft`.
-3. Validar logs, wrappers e `audit`.
-4. Implantar proxies internos.
-5. Migrar grupos controlados para `hard`.
-6. Ligar FleetDM/osquery para drift e bypass detection.
+- Do not make `bumblebee` part of `apply`, `audit`, or `repair`
+- Do not treat `bumblebee` as an inline enforcement tool
+- Do not assume `scfw` replaces local wrapper enforcement
+- Do not bypass `Supply Gate` by calling package managers outside the managed `PATH`
 
-## Próximos incrementos recomendados
+## AI CLI Sandboxing
 
-- assinatura dos artefatos de policy;
-- encadeamento criptográfico dos logs;
-- queries Fleet por SO;
-- integração com SIEM;
-- validação mais rígida de registries por ecossistema;
-- backend de jail pronto para macOS/Linux/Windows.
+`claude`, `gemini`, and `codex` are treated as sensitive commands.
 
-## Matriz de Cobertura
+If no launcher is configured for the active AI jail backend, those commands are blocked by design. For local machine overrides, prefer setting the launcher in `policy/local-policy.conf`.
 
-| Camada | Cobre bem | Nao cobre sozinha |
-| --- | --- | --- |
-| Wrappers + policy local | enforcement, PATH, lock discipline, jail, trilha local de execucao | inventario profundo de estado ja presente no disco |
-| Proxies internos | origem, cache, bloqueio pre-download, trilha central | bypass fora do fluxo gerenciado, execucao pos-download |
-| `FleetDM` / `osquery` | drift, hash, presence checks, alguns sinais de bypass | bloqueio inline e inventario sem query/modelagem previa |
-| `bumblebee` | inventario read-only, exposure scan local, extensoes/configs MCP JSON | enforcement, proxy, correcao de drift, observacao de processo em tempo real |
+## Recommended Rollout
+
+1. Start with `soft` mode on a local machine.
+2. Validate wrappers, logs, and `./install.sh audit`.
+3. Configure local jail settings for AI CLIs.
+4. Add internal registries or proxies if you plan to use `hard` mode.
+5. Roll out `hard` mode only after those upstream services are operational.
+
+## Project Scope
+
+Supply Gate focuses on local prevention and enforcement.
+
+It does not try to replace:
+
+- corporate dependency proxies
+- central telemetry or SIEM
+- endpoint inventory tools
+- exposure hunting or incident-wide discovery workflows
+
+For broader guidance and deployment patterns, see:
+
+- [GUIDE.md](GUIDE.md)
+- [docs/internal-proxies.md](docs/internal-proxies.md)
+- [docs/prescriptive-proxy-stack.md](docs/prescriptive-proxy-stack.md)
+- [docker/README.md](docker/README.md)

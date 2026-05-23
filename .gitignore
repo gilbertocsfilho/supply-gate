@@ -15,6 +15,7 @@ shims-bin/
 policy/local-policy.conf
 policy.conf
 .ai-jail
+.tool-versions
 
 # Dependency and build artifacts
 node_modules/

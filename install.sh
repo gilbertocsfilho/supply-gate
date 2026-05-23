@@ -18,6 +18,7 @@ Usage:
   ./install.sh apply [--mode soft|hard]
   ./install.sh audit
   ./install.sh repair
+  ./install.sh install-optional-tools [--scfw] [--bumblebee] [--all]
   ./install.sh uninstall
 EOF
 }
@@ -35,6 +36,198 @@ parse_mode_flag() {
         ;;
     esac
   done
+}
+
+optional_tools_requested() {
+  [ "$INSTALL_SCFW" = "1" ] || [ "$INSTALL_BUMBLEBEE" = "1" ]
+}
+
+parse_optional_tools_flags() {
+  INSTALL_SCFW=0
+  INSTALL_BUMBLEBEE=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --scfw)
+        INSTALL_SCFW=1
+        shift
+        ;;
+      --bumblebee)
+        INSTALL_BUMBLEBEE=1
+        shift
+        ;;
+      --all)
+        INSTALL_SCFW=1
+        INSTALL_BUMBLEBEE=1
+        shift
+        ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  if ! optional_tools_requested; then
+    INSTALL_SCFW=1
+    INSTALL_BUMBLEBEE=1
+  fi
+}
+
+require_command() {
+  tool=$1
+  install_hint=$2
+  if command -v "$tool" >/dev/null 2>&1; then
+    return 0
+  fi
+  log_error "Missing required command: $tool"
+  log_error "$install_hint"
+  return 1
+}
+
+go_version_at_least() {
+  required_major=$1
+  required_minor=$2
+
+  if ! go_bin=$(resolve_real_binary go 2>/dev/null); then
+    return 1
+  fi
+
+  if ! go_version_output=$("$go_bin" version 2>/dev/null); then
+    return 1
+  fi
+
+  go_version_token=$(printf '%s\n' "$go_version_output" | awk '{print $3}')
+  go_version_token=${go_version_token#go}
+  go_major=$(printf '%s' "$go_version_token" | cut -d. -f1)
+  go_minor=$(printf '%s' "$go_version_token" | cut -d. -f2)
+
+  case "$go_major" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  case "$go_minor" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  if [ "$go_major" -gt "$required_major" ]; then
+    return 0
+  fi
+  if [ "$go_major" -lt "$required_major" ]; then
+    return 1
+  fi
+  [ "$go_minor" -ge "$required_minor" ]
+}
+
+install_scfw_tool() {
+  case "$PLATFORM" in
+    windows)
+      log_warn "Skipping scfw install: upstream support is not available for Windows"
+      log_json_event "WARN" "optional.install.skipped" "scfw" "install-optional-tools" "skipped" "unsupported platform windows"
+      return 0
+      ;;
+    macos|linux) ;;
+    *)
+      log_warn "Skipping scfw install: unsupported platform $PLATFORM"
+      log_json_event "WARN" "optional.install.skipped" "scfw" "install-optional-tools" "skipped" "unsupported platform"
+      return 0
+      ;;
+  esac
+
+  require_command pipx "Install pipx first, then rerun this command." || return 1
+
+  if command -v scfw >/dev/null 2>&1; then
+    log_info "scfw is already installed; refreshing via pipx"
+    if pipx upgrade scfw >/dev/null 2>&1; then
+      log_info "scfw upgraded successfully"
+      log_json_event "INFO" "optional.install.completed" "scfw" "install-optional-tools" "success" "pipx upgrade"
+      return 0
+    fi
+    log_warn "pipx upgrade scfw failed; trying reinstall"
+    if pipx reinstall scfw >/dev/null 2>&1; then
+      log_info "scfw reinstalled successfully"
+      log_json_event "INFO" "optional.install.completed" "scfw" "install-optional-tools" "success" "pipx reinstall"
+      return 0
+    fi
+    log_error "Failed to upgrade or reinstall scfw"
+    log_json_event "ERROR" "optional.install.failed" "scfw" "install-optional-tools" "failure" "pipx upgrade/reinstall failed"
+    return 1
+  fi
+
+  if pipx install scfw >/dev/null 2>&1; then
+    log_info "scfw installed successfully"
+    log_json_event "INFO" "optional.install.completed" "scfw" "install-optional-tools" "success" "pipx install"
+    return 0
+  fi
+
+  log_error "Failed to install scfw via pipx"
+  log_json_event "ERROR" "optional.install.failed" "scfw" "install-optional-tools" "failure" "pipx install failed"
+  return 1
+}
+
+install_bumblebee_tool() {
+  case "$PLATFORM" in
+    windows)
+      log_warn "Skipping bumblebee install: upstream supports macOS and Linux only as of May 23, 2026"
+      log_json_event "WARN" "optional.install.skipped" "bumblebee" "install-optional-tools" "skipped" "unsupported platform windows"
+      return 0
+      ;;
+    macos|linux) ;;
+    *)
+      log_warn "Skipping bumblebee install: unsupported platform $PLATFORM"
+      log_json_event "WARN" "optional.install.skipped" "bumblebee" "install-optional-tools" "skipped" "unsupported platform"
+      return 0
+      ;;
+  esac
+
+  require_command go "Install Go 1.25+ first, then rerun this command." || return 1
+  if ! go_bin=$(resolve_real_binary go 2>/dev/null); then
+    log_error "Failed to resolve the real Go binary"
+    log_json_event "ERROR" "optional.install.failed" "bumblebee" "install-optional-tools" "failure" "cannot resolve real go binary"
+    return 1
+  fi
+  if ! go_version_at_least 1 25; then
+    log_error "bumblebee install requires Go 1.25+"
+    log_error "Current version: $("$go_bin" version 2>/dev/null || echo unknown)"
+    log_json_event "ERROR" "optional.install.failed" "bumblebee" "install-optional-tools" "failure" "requires Go 1.25+"
+    return 1
+  fi
+
+  if "$go_bin" install github.com/perplexityai/bumblebee/cmd/bumblebee@v0.1.1 >/dev/null 2>&1; then
+    log_info "bumblebee installed successfully"
+    log_json_event "INFO" "optional.install.completed" "bumblebee" "install-optional-tools" "success" "go install v0.1.1"
+    return 0
+  fi
+
+  log_error "Failed to install bumblebee via go install"
+  log_json_event "ERROR" "optional.install.failed" "bumblebee" "install-optional-tools" "failure" "go install failed"
+  return 1
+}
+
+install_optional_tools_cmd() {
+  parse_optional_tools_flags "$@"
+  log_init "install-optional-tools"
+  ENFORCEMENT_MODE=${DEFAULT_MODE:-soft}
+  failures=0
+
+  log_info "Installing optional tools"
+  log_json_event "INFO" "optional.install.started" "install.sh" "install-optional-tools" "started" "optional tools install"
+
+  if [ "$INSTALL_SCFW" = "1" ]; then
+    install_scfw_tool || failures=$((failures + 1))
+  fi
+
+  if [ "$INSTALL_BUMBLEBEE" = "1" ]; then
+    install_bumblebee_tool || failures=$((failures + 1))
+  fi
+
+  if [ "$failures" -gt 0 ]; then
+    log_error "Optional tool installation finished with $failures failure(s)"
+    log_json_event "ERROR" "optional.install.completed" "install.sh" "install-optional-tools" "failure" "$failures failures"
+    exit 1
+  fi
+
+  log_info "Optional tool installation completed"
+  log_json_event "INFO" "optional.install.completed" "install.sh" "install-optional-tools" "success" "all requested tools handled"
 }
 
 write_profile_snippet() {
@@ -68,7 +261,14 @@ call_windows_helper() {
 install_runtime() {
   cp "$SCRIPT_DIR/lib/common.sh" "$COMMON_RUNTIME"
   cp "$SCRIPT_DIR/shims/manager-wrapper.sh" "$WRAPPER_BIN"
-  cp "$POLICY_FILE" "$RUNTIME_ROOT/policy.conf"
+  cat "$POLICY_FILE" >"$RUNTIME_ROOT/policy.conf"
+  if [ -n "${LOCAL_POLICY_FILE:-}" ] && [ -f "$LOCAL_POLICY_FILE" ]; then
+    {
+      printf '\n'
+      printf '# Local overrides applied at install time\n'
+      cat "$LOCAL_POLICY_FILE"
+    } >>"$RUNTIME_ROOT/policy.conf"
+  fi
   chmod 755 "$COMMON_RUNTIME" "$WRAPPER_BIN"
 }
 
@@ -155,7 +355,7 @@ configure_go() {
 record_detected_binaries() {
   : >"$BINMAP_FILE"
   for tool in $MANAGED_COMMANDS; do
-    if real_bin=$(find_real_binary "$tool" 2>/dev/null); then
+    if real_bin=$(resolve_real_binary "$tool" 2>/dev/null); then
       upper=$(printf '%s' "$tool" | tr '[:lower:]-' '[:upper:]_')
       printf 'REAL_BIN_%s="%s"\n' "$upper" "$real_bin" >>"$BINMAP_FILE"
     fi
@@ -329,6 +529,7 @@ case "$SUBCOMMAND" in
   apply) apply_cmd "$@" ;;
   audit) audit_cmd ;;
   repair) repair_cmd ;;
+  install-optional-tools) install_optional_tools_cmd "$@" ;;
   uninstall) uninstall_cmd ;;
   ""|-h|--help|help) usage ;;
   *)
