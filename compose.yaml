@@ -1,0 +1,110 @@
+services:
+  nginx:
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
+    container_name: supply-chain-nginx
+    depends_on:
+      verdaccio:
+        condition: service_started
+      devpi:
+        condition: service_healthy
+      athens:
+        condition: service_started
+      kellnr:
+        condition: service_started
+    ports:
+      - "${NGINX_HTTP_PORT:-8080}:80"
+    environment:
+      NPM_PROXY_HOSTNAME: ${NPM_PROXY_HOSTNAME:-npm-proxy.corp.example}
+      PYPI_PROXY_HOSTNAME: ${PYPI_PROXY_HOSTNAME:-pypi-proxy.corp.example}
+      GO_PROXY_HOSTNAME: ${GO_PROXY_HOSTNAME:-go-proxy.corp.example}
+      CARGO_PROXY_HOSTNAME: ${CARGO_PROXY_HOSTNAME:-cargo-proxy.corp.example}
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - supply_chain_net
+    restart: unless-stopped
+
+  verdaccio:
+    image: ${VERDACCIO_IMAGE:-verdaccio/verdaccio:6}
+    container_name: supply-chain-verdaccio
+    environment:
+      VERDACCIO_APPDIR: /verdaccio
+    volumes:
+      - ./docker/verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
+      - verdaccio_storage:/verdaccio/storage
+      - verdaccio_conf:/verdaccio/conf-data
+    networks:
+      - supply_chain_net
+    restart: unless-stopped
+
+  devpi:
+    build:
+      context: .
+      dockerfile: docker/devpi/Dockerfile
+    container_name: supply-chain-devpi
+    environment:
+      DEVPI_SERVERDIR: /data/server
+      DEVPI_HOST: 0.0.0.0
+      DEVPI_PORT: "3141"
+      DEVPI_INIT_ARGS: ""
+    volumes:
+      - devpi_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3141/ || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - supply_chain_net
+    restart: unless-stopped
+
+  athens:
+    image: ${ATHENS_IMAGE:-gomods/athens:latest}
+    container_name: supply-chain-athens
+    environment:
+      ATHENS_STORAGE_TYPE: disk
+      ATHENS_DISK_STORAGE_ROOT: /var/lib/athens
+      ATHENS_GLOBAL_ENDPOINT: ${ATHENS_GLOBAL_ENDPOINT:-http://go-proxy.corp.example}
+      ATHENS_LOG_LEVEL: info
+      ATHENS_DOWNLOAD_MODE: sync
+      ATHENS_SINGLE_FLIGHT_TYPE: in-memory
+    volumes:
+      - ./docker/athens/config.toml:/etc/athens/config.toml:ro
+      - athens_storage:/var/lib/athens
+    command: ["proxy", "-config_file=/etc/athens/config.toml"]
+    networks:
+      - supply_chain_net
+    restart: unless-stopped
+
+  kellnr:
+    image: ${KELLNR_IMAGE:-ghcr.io/kellnr/kellnr:5}
+    container_name: supply-chain-kellnr
+    environment:
+      KELLNR_ORIGIN__HOSTNAME: ${KELLNR_HOSTNAME:-cargo-proxy.corp.example}
+      KELLNR_ORIGIN__PORT: "8000"
+      KELLNR_DATABASE__TYPE: sqlite
+      KELLNR_DATABASE__PATH: /var/lib/kellnr/kellnr.sqlite
+      KELLNR_STORAGE__TYPE: local
+      KELLNR_STORAGE__LOCAL__PATH: /var/lib/kellnr/crates
+      KELLNR_LOG__FORMAT: plain
+      KELLNR_LOG__LEVEL: info
+    volumes:
+      - kellnr_data:/var/lib/kellnr
+    networks:
+      - supply_chain_net
+    restart: unless-stopped
+
+volumes:
+  nginx_logs:
+  verdaccio_storage:
+  verdaccio_conf:
+  devpi_data:
+  athens_storage:
+  kellnr_data:
+
+networks:
+  supply_chain_net:
+    driver: bridge

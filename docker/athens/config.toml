@@ -1,0 +1,9 @@
+GoBinaryEnvVars = []
+ProtocolWorkers = 10
+LogLevel = "info"
+DownloadMode = "sync"
+StorageType = "disk"
+GlobalEndpoint = "http://go-proxy.corp.example"
+
+[DiskStorage]
+Root = "/var/lib/athens"

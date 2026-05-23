@@ -1,0 +1,54 @@
+server {
+  listen 80 default_server;
+  server_name _;
+
+  return 404;
+}
+
+server {
+  listen 80;
+  server_name ${NPM_PROXY_HOSTNAME};
+
+  access_log /var/log/nginx/npm-proxy.access.log supply_chain;
+  error_log /var/log/nginx/npm-proxy.error.log warn;
+
+  location / {
+    proxy_pass http://verdaccio:4873;
+  }
+}
+
+server {
+  listen 80;
+  server_name ${PYPI_PROXY_HOSTNAME};
+
+  access_log /var/log/nginx/pypi-proxy.access.log supply_chain;
+  error_log /var/log/nginx/pypi-proxy.error.log warn;
+
+  location / {
+    proxy_pass http://devpi:3141;
+  }
+}
+
+server {
+  listen 80;
+  server_name ${GO_PROXY_HOSTNAME};
+
+  access_log /var/log/nginx/go-proxy.access.log supply_chain;
+  error_log /var/log/nginx/go-proxy.error.log warn;
+
+  location / {
+    proxy_pass http://athens:3000;
+  }
+}
+
+server {
+  listen 80;
+  server_name ${CARGO_PROXY_HOSTNAME};
+
+  access_log /var/log/nginx/cargo-proxy.access.log supply_chain;
+  error_log /var/log/nginx/cargo-proxy.error.log warn;
+
+  location / {
+    proxy_pass http://kellnr:8000;
+  }
+}
