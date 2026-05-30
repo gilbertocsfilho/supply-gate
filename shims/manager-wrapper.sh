@@ -75,13 +75,11 @@ run_package_manager() {
     go)
       if [ "$mode" = "hard" ]; then
         export GOPROXY=${GO_PROXY_URL:-}
-      else
-        export GOPROXY=${GO_PROXY_URL:-https://proxy.golang.org,direct}
+        export GOSUMDB=${GO_SUMDB:-sum.golang.org}
+        export GOPRIVATE=${GO_PRIVATE_PATTERNS:-}
+        export GONOSUMDB=${GO_NO_SUMDB_PATTERNS:-}
+        export GOVCS=${GO_VCS_RULES:-}
       fi
-      export GOSUMDB=${GO_SUMDB:-sum.golang.org}
-      export GOPRIVATE=${GO_PRIVATE_PATTERNS:-}
-      export GONOSUMDB=${GO_NO_SUMDB_PATTERNS:-}
-      export GOVCS=${GO_VCS_RULES:-}
       ;;
     pip|uv|poetry)
       if [ -n "${PYTHON_INDEX_URL:-}" ] && [ "$mode" = "hard" ]; then
