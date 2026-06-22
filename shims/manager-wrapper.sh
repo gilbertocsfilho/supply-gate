@@ -31,6 +31,14 @@ if [ -z "${real_bin:-}" ] || [ ! -x "$real_bin" ]; then
   exit 1
 fi
 
+case "$tool" in
+  pip|pip3)
+    if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/$tool" ]; then
+      real_bin="$VIRTUAL_ENV/bin/$tool"
+    fi
+    ;;
+esac
+
 mode=$(current_mode)
 ENFORCEMENT_MODE=$mode
 
@@ -81,7 +89,7 @@ run_package_manager() {
         export GOVCS=${GO_VCS_RULES:-}
       fi
       ;;
-    pip|uv|poetry)
+    pip|pip3|uv|poetry)
       if [ -n "${PYTHON_INDEX_URL:-}" ] && [ "$mode" = "hard" ]; then
         export PIP_INDEX_URL=$PYTHON_INDEX_URL
       fi
@@ -112,7 +120,7 @@ run_package_manager() {
           install|i|update|up) return 0 ;;
         esac
         ;;
-      pip)
+      pip|pip3)
         case "$first_arg" in
           install) return 0 ;;
         esac

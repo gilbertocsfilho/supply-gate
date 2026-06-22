@@ -23,6 +23,7 @@ Supported commands today:
 - `yarn`
 - `bun`
 - `pip`
+- `pip3`
 - `uv`
 - `poetry`
 - `cargo`
@@ -167,7 +168,7 @@ If `scfw` is installed, `Supply Gate` can invoke it transparently for supported 
 Current default behavior:
 
 - enabled by `SCFW_AUTO_WRAP="1"`
-- active for `npm`, `pip`, and `poetry`
+- active for `npm`, `pip`, `pip3`, and `poetry`
 - only applied to install-like commands
 
 Examples that are transparently routed through `scfw` when available:
