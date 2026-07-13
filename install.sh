@@ -11,15 +11,21 @@ SUBCOMMAND=${1:-}
 shift || true
 
 MODE=""
+SCOPE=""
 
 usage() {
   cat <<EOF
 Usage:
-  ./install.sh apply [--mode soft|hard]
-  ./install.sh audit
+  ./install.sh apply [--mode soft|hard] [--scope user|machine]
+  ./install.sh audit [--scope user|machine]
   ./install.sh repair
+  ./install.sh status
   ./install.sh install-optional-tools [--scfw] [--bumblebee] [--all]
-  ./install.sh uninstall
+  ./install.sh uninstall [--scope user|machine]
+
+  --scope user    (default) apply only to the current user
+  --scope machine apply to all local users and system-wide profile layer
+                  requires root; used for KACE or similar deployment tools
 EOF
 }
 
@@ -36,6 +42,57 @@ parse_mode_flag() {
         ;;
     esac
   done
+}
+
+parse_scope_flag() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --scope)
+        SCOPE=${2:-}
+        shift 2
+        case "$SCOPE" in
+          user|machine) ;;
+          *)
+            echo "Unknown scope: $SCOPE (use 'user' or 'machine')" >&2
+            exit 2
+            ;;
+        esac
+        ;;
+      --mode)
+        MODE=${2:-}
+        shift 2
+        ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+require_root() {
+  if [ "$(id -u)" != "0" ]; then
+    echo "ERROR: --scope machine requires root privileges (use sudo)" >&2
+    exit 1
+  fi
+}
+
+# Override STATE_ROOT and all derived paths to system-wide locations.
+# Must be called before ensure_dirs and any function that uses these paths.
+setup_system_paths() {
+  system_root=${INSTALL_ROOT_OVERRIDE:-/opt/supply-gate}
+  STATE_ROOT="$system_root"
+  LOG_ROOT="$STATE_ROOT/logs"
+  SHIM_ROOT="$STATE_ROOT/shims"
+  RUNTIME_ROOT="$STATE_ROOT/runtime"
+  ATT_ROOT="$STATE_ROOT/attestation"
+  RUNSTATE_FILE="$STATE_ROOT/runtime/state.conf"
+  BINMAP_FILE="$STATE_ROOT/runtime/binmap.conf"
+  PROFILE_SNIPPET="$STATE_ROOT/runtime/profile.sh"
+  WRAPPER_BIN="$STATE_ROOT/runtime/manager-wrapper.sh"
+  COMMON_RUNTIME="$STATE_ROOT/runtime/common.sh"
+  AGGREGATE_LOG="$LOG_ROOT/events.jsonl"
+  STATUS_FILE="$ATT_ROOT/status.env"
 }
 
 optional_tools_requested() {
@@ -277,7 +334,7 @@ configure_npm() {
 save-exact=true
 min-release-age=7
 minimum-release-age=${NODE_COOLDOWN_MINUTES}
-$( [ "$ENFORCEMENT_MODE" = "hard" ] && printf 'registry=%s\n' "$NPM_REGISTRY_URL" )
+$( if [ "$ENFORCEMENT_MODE" = "hard" ]; then printf 'registry=%s\n' "$NPM_REGISTRY_URL"; fi )
 EOF
 )
   append_managed_block "$HOME/.npmrc" "$block"
@@ -297,7 +354,7 @@ configure_pip() {
   block=$(cat <<EOF
 [global]
 disable-pip-version-check = true
-$( [ "$ENFORCEMENT_MODE" = "hard" ] && printf 'index-url = %s\n' "$PYTHON_INDEX_URL" )
+$( if [ "$ENFORCEMENT_MODE" = "hard" ]; then printf 'index-url = %s\n' "$PYTHON_INDEX_URL"; fi )
 EOF
 )
   append_managed_block "$pip_conf" "$block"
@@ -387,10 +444,18 @@ verify_mode_prereqs() {
 }
 
 apply_cmd() {
-  parse_mode_flag "$@"
+  parse_scope_flag "$@"
   ENFORCEMENT_MODE=${MODE:-${DEFAULT_MODE:-soft}}
+  if [ "${SCOPE:-user}" = "machine" ]; then
+    apply_machine_cmd
+  else
+    apply_user_cmd
+  fi
+}
+
+apply_user_cmd() {
   log_init "apply"
-  log_info "Applying policy mode: $ENFORCEMENT_MODE"
+  log_info "Applying policy mode: $ENFORCEMENT_MODE (scope: user)"
   log_json_event "INFO" "apply.started" "install.sh" "apply" "started" "$ENFORCEMENT_MODE"
   ensure_dirs
   verify_mode_prereqs
@@ -413,6 +478,40 @@ apply_cmd() {
   log_json_event "INFO" "apply.completed" "install.sh" "apply" "success" "policy applied"
 }
 
+apply_machine_cmd() {
+  require_root
+  setup_system_paths
+  log_init "apply"
+  log_info "Applying policy mode: $ENFORCEMENT_MODE (scope: machine)"
+  log_json_event "INFO" "apply.started" "install.sh" "apply-machine" "started" "$ENFORCEMENT_MODE"
+  ensure_dirs
+  chmod 750 "$LOG_ROOT"
+  verify_mode_prereqs
+  install_runtime
+  save_runtime_state "$ENFORCEMENT_MODE"
+  record_detected_binaries
+  create_shims
+  write_profile_snippet
+  apply_system_profiles
+  # configure_go writes to the current user's GOENV; in machine scope this covers root.
+  # Non-fatal: failure is logged but does not abort the rest of the apply.
+  configure_go || log_warn "configure_go failed in machine scope; skipping go env hardening"
+  # Apply package-manager configs to root
+  apply_user_configs_for_home "/root" "/root/.config" || \
+    log_warn "Failed to configure root user"
+  # Apply to all local users
+  list_local_users | while IFS=: read -r _user user_home; do
+    [ -d "$user_home" ] || continue
+    log_info "Configuring user: $_user ($user_home)"
+    apply_user_configs_for_home "$user_home" "$user_home/.config" || \
+      log_warn "Failed to configure user: $_user"
+  done
+  rotate_logs
+  save_status "applied"
+  log_info "Machine-scope policy applied. Open a new shell (or run 'hash -r') to pick up PATH changes."
+  log_json_event "INFO" "apply.completed" "install.sh" "apply-machine" "success" "machine scope"
+}
+
 current_go_value() {
   key=$1
   if ! go_cmd=$(find_real_binary go 2>/dev/null); then
@@ -429,7 +528,7 @@ contains_marker() {
   [ -f "$file" ] && grep -F "$MARKER_BEGIN" "$file" >/dev/null 2>&1
 }
 
-audit_cmd() {
+audit_user_cmd() {
   log_init "audit"
   load_runtime_state
   ENFORCEMENT_MODE=${ENFORCEMENT_MODE:-${DEFAULT_MODE:-soft}}
@@ -502,6 +601,84 @@ audit_cmd() {
   log_json_event "INFO" "audit.completed" "install.sh" "audit" "success" "compliant"
 }
 
+audit_machine_cmd() {
+  require_root
+  setup_system_paths
+  log_init "audit"
+  load_runtime_state
+  ENFORCEMENT_MODE=${ENFORCEMENT_MODE:-${DEFAULT_MODE:-soft}}
+  failures=0
+  log_info "Auditing machine-scope hardening state in mode: $ENFORCEMENT_MODE"
+  log_json_event "INFO" "audit.started" "install.sh" "audit-machine" "started" "$ENFORCEMENT_MODE"
+
+  for file in "$COMMON_RUNTIME" "$WRAPPER_BIN" "$BINMAP_FILE" "$RUNSTATE_FILE" "$PROFILE_SNIPPET"; do
+    if [ ! -f "$file" ]; then
+      log_error "Missing required runtime file: $file"
+      failures=$((failures + 1))
+    fi
+  done
+
+  if [ ! -f /etc/profile.d/supply-gate.sh ]; then
+    log_error "Missing system-wide profile: /etc/profile.d/supply-gate.sh"
+    failures=$((failures + 1))
+  fi
+
+  for tool in $MANAGED_COMMANDS; do
+    shim="$SHIM_ROOT/$tool"
+    if grep -q "REAL_BIN_$(printf '%s' "$tool" | tr '[:lower:]-' '[:upper:]_')=" "$BINMAP_FILE" 2>/dev/null; then
+      if [ ! -x "$shim" ]; then
+        log_error "Missing shim for detected tool: $tool"
+        failures=$((failures + 1))
+      fi
+    fi
+  done
+
+  if [ ! -f "$AGGREGATE_LOG" ]; then
+    log_error "Aggregate JSONL log missing"
+    failures=$((failures + 1))
+  fi
+
+  audit_user_pkg_configs() {
+    username=$1; home_dir=$2; config_dir=$3
+    ok=1
+    contains_marker "$home_dir/.npmrc"        || { log_warn "npmrc missing managed block: $username"; ok=0; }
+    contains_marker "$home_dir/.bunfig.toml"  || { log_warn "bunfig missing managed block: $username"; ok=0; }
+    contains_marker "$config_dir/pip/pip.conf" || { log_warn "pip.conf missing managed block: $username"; ok=0; }
+    contains_marker "$home_dir/.cargo/config.toml" || { log_warn "cargo config missing managed block: $username"; ok=0; }
+    return $ok
+  }
+
+  audit_user_pkg_configs "root" "/root" "/root/.config" || failures=$((failures + 1))
+  list_local_users | while IFS=: read -r username user_home; do
+    [ -d "$user_home" ] || continue
+    audit_user_pkg_configs "$username" "$user_home" "$user_home/.config" || true
+  done
+
+  if [ "$ENFORCEMENT_MODE" = "hard" ]; then
+    verify_mode_prereqs || failures=$((failures + 1))
+  fi
+
+  if [ "$failures" -gt 0 ]; then
+    save_status "non-compliant"
+    log_error "Audit failed with $failures issue(s)"
+    log_json_event "ERROR" "audit.completed" "install.sh" "audit-machine" "failure" "$failures issues"
+    exit 1
+  fi
+
+  save_status "compliant"
+  log_info "Machine-scope audit passed"
+  log_json_event "INFO" "audit.completed" "install.sh" "audit-machine" "success" "compliant"
+}
+
+audit_cmd() {
+  parse_scope_flag "$@"
+  if [ "${SCOPE:-user}" = "machine" ]; then
+    audit_machine_cmd
+  else
+    audit_user_cmd
+  fi
+}
+
 repair_cmd() {
   load_runtime_state
   ENFORCEMENT_MODE=${ENFORCEMENT_MODE:-${DEFAULT_MODE:-soft}}
@@ -509,6 +686,22 @@ repair_cmd() {
 }
 
 uninstall_cmd() {
+  parse_scope_flag "$@"
+  # When no explicit --scope is given and we are root, default uninstall to machine
+  # scope so the system-wide layer (/etc/profile.d, system rc files, /opt state) is
+  # fully removed. A non-root invocation keeps user scope (machine requires root).
+  if [ -z "$SCOPE" ] && [ "$(id -u)" = "0" ]; then
+    SCOPE=machine
+    log_info "No --scope given and running as root; defaulting uninstall to machine scope"
+  fi
+  if [ "${SCOPE:-user}" = "machine" ]; then
+    uninstall_machine_cmd
+  else
+    uninstall_user_cmd
+  fi
+}
+
+uninstall_user_cmd() {
   log_init "uninstall"
   log_info "Removing managed shell blocks and local state"
   remove_managed_block "$HOME/.profile"
@@ -525,12 +718,64 @@ uninstall_cmd() {
   log_info "Uninstall complete"
 }
 
+uninstall_machine_cmd() {
+  require_root
+  setup_system_paths
+  log_init "uninstall"
+  log_info "Removing machine-scope managed blocks and system state"
+  log_json_event "INFO" "uninstall.started" "install.sh" "uninstall-machine" "started" "machine scope"
+  remove_system_profiles
+  # Remove from root
+  remove_user_configs_for_home "/root" "/root/.config"
+  # Remove from all local users
+  list_local_users | while IFS=: read -r _user user_home; do
+    [ -d "$user_home" ] || continue
+    log_info "Removing from user: $_user ($user_home)"
+    remove_user_configs_for_home "$user_home" "$user_home/.config"
+  done
+  rm -rf "$STATE_ROOT"
+  log_info "Machine-scope uninstall complete"
+  log_json_event "INFO" "uninstall.completed" "install.sh" "uninstall-machine" "success" "machine scope"
+}
+
+status_cmd() {
+  configured=0
+  status_system
+  # The system-wide profile layer covers every user's PATH; when present, users
+  # without per-user package configs are still covered rather than unconfigured.
+  system_active=""
+  [ -f /etc/profile.d/supply-gate.sh ] && system_active=1
+  printf '\nUsers:\n'
+  # Root
+  root_count=0
+  for f in /root/.profile /root/.bashrc /root/.zshrc /root/.npmrc /root/.bunfig.toml \
+            /root/.config/pip/pip.conf /root/.cargo/config.toml; do
+    [ -f "$f" ] && grep -qF "$MARKER_BEGIN" "$f" && root_count=$((root_count + 1))
+  done
+  if [ "$root_count" -gt 0 ]; then
+    configured=$((configured + 1))
+  fi
+  status_user "root" "/root" "/root/.config" "$system_active"
+  # Local users
+  list_local_users | while IFS=: read -r username user_home; do
+    status_user "$username" "$user_home" "$user_home/.config" "$system_active"
+  done
+  if [ "$configured" -gt 0 ] || [ -n "$system_active" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# Guard: skip dispatch when sourced by tests (_SCP_SOURCED=1).
+[ "${_SCP_SOURCED:-}" = "1" ] && return 0
+
 case "$SUBCOMMAND" in
   apply) apply_cmd "$@" ;;
   audit) audit_cmd ;;
   repair) repair_cmd ;;
+  status) status_cmd ;;
   install-optional-tools) install_optional_tools_cmd "$@" ;;
-  uninstall) uninstall_cmd ;;
+  uninstall) uninstall_cmd "$@" ;;
   ""|-h|--help|help) usage ;;
   *)
     echo "Unknown subcommand: $SUBCOMMAND" >&2

@@ -130,7 +130,11 @@ log_line() {
   shift
   msg=$*
   ts=$(timestamp_utc)
-  printf '%s [%s] %s\n' "$ts" "$level" "$msg" | tee -a "$RUN_LOG_TXT"
+  if [ -n "${RUN_LOG_TXT:-}" ]; then
+    printf '%s [%s] %s\n' "$ts" "$level" "$msg" | tee -a "$RUN_LOG_TXT"
+  else
+    printf '%s [%s] %s\n' "$ts" "$level" "$msg"
+  fi
 }
 
 log_json_event() {
@@ -336,4 +340,138 @@ verify_path_snippet() {
 
 platform_supports_windows_helper() {
   [ "$PLATFORM" = "windows" ]
+}
+
+# Emit "username:home_dir" for each local user eligible for machine-scope apply.
+# Reads from /etc/passwd by default; set PASSWD_FILE to override (useful in tests).
+list_local_users() {
+  if [ "$PLATFORM" = "macos" ] && [ -z "${PASSWD_FILE:-}" ]; then
+    list_local_users_macos
+  else
+    list_local_users_passwd
+  fi
+}
+
+list_local_users_passwd() {
+  uid_min=${LOCAL_USER_UID_MIN:-1000}
+  uid_max=${LOCAL_USER_UID_MAX:-60000}
+  passwd_src=${PASSWD_FILE:-/etc/passwd}
+  awk -F: -v min="$uid_min" -v max="$uid_max" '
+    $3 >= min && $3 < max &&
+    $7 !~ /(nologin|\/false|\/sync|\/halt|\/shutdown)/ {
+      print $1 ":" $6
+    }
+  ' "$passwd_src"
+}
+
+# macOS stores real user accounts in Directory Services, not /etc/passwd
+# (which only carries legacy system entries there), so enumerate via dscl.
+list_local_users_macos() {
+  uid_min=${LOCAL_USER_UID_MIN:-500}
+  uid_max=${LOCAL_USER_UID_MAX:-60000}
+  dscl . -list /Users UniqueID 2>/dev/null | awk -v min="$uid_min" -v max="$uid_max" \
+    '$2 >= min && $2 < max { print $1 }' | while IFS= read -r uname; do
+    home=$(dscl . -read "/Users/$uname" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    printf '%s:%s\n' "$uname" "${home:-/Users/$uname}"
+  done
+}
+
+# Apply package-manager configs for a given user home directory.
+# Temporarily substitutes HOME and CONFIG_ROOT, then restores them.
+apply_user_configs_for_home() {
+  target_home=$1
+  target_config=$2
+  _saved_home=$HOME
+  _saved_config=$CONFIG_ROOT
+  HOME=$target_home
+  CONFIG_ROOT=$target_config
+  configure_npm
+  configure_bun
+  configure_pip
+  configure_cargo
+  HOME=$_saved_home
+  CONFIG_ROOT=$_saved_config
+}
+
+# Remove managed blocks from all package-manager configs under a given home.
+remove_user_configs_for_home() {
+  target_home=$1
+  target_config=$2
+  remove_managed_block "$target_home/.profile"
+  remove_managed_block "$target_home/.bashrc"
+  remove_managed_block "$target_home/.zshrc"
+  remove_managed_block "$target_home/.npmrc"
+  remove_managed_block "$target_home/.bunfig.toml"
+  remove_managed_block "$target_config/pip/pip.conf"
+  remove_managed_block "$target_home/.cargo/config.toml"
+}
+
+# Write /etc/profile.d/supply-gate.sh and add managed blocks to system rc files.
+# Requires root. PROFILE_SNIPPET must already be written (via write_profile_snippet).
+apply_system_profiles() {
+  profile_d_file="/etc/profile.d/supply-gate.sh"
+  mkdir -p "$(dirname "$profile_d_file")"
+  printf '. "%s"\n' "$PROFILE_SNIPPET" >"$profile_d_file"
+  chmod 644 "$profile_d_file"
+  block=". \"$PROFILE_SNIPPET\""
+  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc; do
+    [ -f "$sys_rc" ] && append_managed_block "$sys_rc" "$block"
+  done
+}
+
+# Remove /etc/profile.d/supply-gate.sh and managed blocks from system rc files.
+remove_system_profiles() {
+  rm -f /etc/profile.d/supply-gate.sh
+  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc; do
+    [ -f "$sys_rc" ] && remove_managed_block "$sys_rc"
+  done
+}
+
+# Count managed files under a home directory; print "username: N files managed" or
+# "username: not configured". A non-empty 4th argument indicates the system-wide
+# profile layer is active, in which case a user with no per-user package configs is
+# still covered (machine scope intentionally does not write per-user shell dotfiles).
+status_user() {
+  username=$1
+  home_dir=$2
+  config_dir=$3
+  system_active=${4:-}
+  n=0
+  managed_list=""
+  for f in "$home_dir/.profile" "$home_dir/.bashrc" "$home_dir/.zshrc" \
+            "$home_dir/.npmrc" "$home_dir/.bunfig.toml" \
+            "$config_dir/pip/pip.conf" "$home_dir/.cargo/config.toml"; do
+    [ -f "$f" ] || continue
+    grep -qF "$MARKER_BEGIN" "$f" || continue
+    n=$((n + 1))
+    label=$(basename "$f")
+    managed_list="$managed_list $label"
+  done
+  if [ "$n" -gt 0 ]; then
+    printf '  %-12s (%s): %d file(s) managed [%s]\n' \
+      "$username" "$home_dir" "$n" "$managed_list"
+  elif [ -n "$system_active" ]; then
+    printf '  %-12s (%s): covered by system-wide profile (no per-user package configs)\n' \
+      "$username" "$home_dir"
+  else
+    printf '  %-12s (%s): not configured\n' "$username" "$home_dir"
+  fi
+}
+
+# Print the system-wide install status.
+status_system() {
+  printf 'System-wide:\n'
+  if [ -f /etc/profile.d/supply-gate.sh ]; then
+    printf '  /etc/profile.d/supply-gate.sh: present\n'
+  else
+    printf '  /etc/profile.d/supply-gate.sh: absent\n'
+  fi
+  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc; do
+    [ -f "$sys_rc" ] || continue
+    if grep -qF "$MARKER_BEGIN" "$sys_rc"; then
+      printf '  %s: managed block present\n' "$sys_rc"
+    else
+      printf '  %s: no managed block\n' "$sys_rc"
+    fi
+  done
 }
