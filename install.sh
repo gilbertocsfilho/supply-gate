@@ -21,11 +21,14 @@ Usage:
   ./install.sh repair
   ./install.sh status
   ./install.sh install-optional-tools [--scfw] [--bumblebee] [--all]
-  ./install.sh uninstall [--scope user|machine]
+  ./install.sh uninstall [--scope user|machine|all]
 
   --scope user    (default) apply only to the current user
   --scope machine apply to all local users and system-wide profile layer
                   requires root; used for KACE or similar deployment tools
+  --scope all     uninstall only: alias for machine scope. Removes the
+                  system-wide layer plus every local user's config (root's
+                  and all others), on Linux and macOS alike. Requires root.
 EOF
 }
 
@@ -51,9 +54,9 @@ parse_scope_flag() {
         SCOPE=${2:-}
         shift 2
         case "$SCOPE" in
-          user|machine) ;;
+          user|machine|all) ;;
           *)
-            echo "Unknown scope: $SCOPE (use 'user' or 'machine')" >&2
+            echo "Unknown scope: $SCOPE (use 'user', 'machine', or 'all')" >&2
             exit 2
             ;;
         esac
@@ -72,7 +75,7 @@ parse_scope_flag() {
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
-    echo "ERROR: --scope machine requires root privileges (use sudo)" >&2
+    echo "ERROR: this scope requires root privileges (use sudo)" >&2
     exit 1
   fi
 }
@@ -87,7 +90,6 @@ setup_system_paths() {
   RUNTIME_ROOT="$STATE_ROOT/runtime"
   ATT_ROOT="$STATE_ROOT/attestation"
   RUNSTATE_FILE="$STATE_ROOT/runtime/state.conf"
-  BINMAP_FILE="$STATE_ROOT/runtime/binmap.conf"
   PROFILE_SNIPPET="$STATE_ROOT/runtime/profile.sh"
   WRAPPER_BIN="$STATE_ROOT/runtime/manager-wrapper.sh"
   COMMON_RUNTIME="$STATE_ROOT/runtime/common.sh"
@@ -291,6 +293,18 @@ write_profile_snippet() {
   cat >"$PROFILE_SNIPPET" <<EOF
 export PATH="$SHIM_ROOT:\$PATH"
 EOF
+  # <tool>-nojail: a memorable everyday way to run a single AI tool invocation
+  # unjailed, without having to remember/type SCP_AI_JAIL_BYPASS=1 by hand
+  # each time. Sets the bypass only for that one command -- not the whole
+  # shell -- and still goes through the shim (via `command`, in case the user
+  # has their own alias for the tool), so it's still logged like every other
+  # invocation. Real bypass mechanism lives in run_ai_tool
+  # (shims/manager-wrapper.sh); this is just a convenience wrapper around it.
+  for tool in $AI_COMMANDS; do
+    cat >>"$PROFILE_SNIPPET" <<EOF
+$tool-nojail() { SCP_AI_JAIL_BYPASS=1 command $tool "\$@"; }
+EOF
+  done
 }
 
 apply_posix_profiles() {
@@ -318,6 +332,16 @@ call_windows_helper() {
 install_runtime() {
   cp "$SCRIPT_DIR/lib/common.sh" "$COMMON_RUNTIME"
   cp "$SCRIPT_DIR/shims/manager-wrapper.sh" "$WRAPPER_BIN"
+  # Stale artifact from older installs: the wrapper resolves real binaries live
+  # now (see create_shims/manager-wrapper.sh) instead of from this cached map.
+  rm -f "$RUNTIME_ROOT/binmap.conf"
+  # Optional ai-jail launcher adapter. Installed to a stable path so a local
+  # policy can point AI_JAIL_LAUNCHER_LINUX/AI_JAIL_LAUNCHER_MACOS at it;
+  # harmless if ai-jail is not used.
+  if [ -f "$SCRIPT_DIR/scripts/ai-jail-launcher.sh" ]; then
+    cp "$SCRIPT_DIR/scripts/ai-jail-launcher.sh" "$RUNTIME_ROOT/ai-jail-launcher.sh"
+    chmod 755 "$RUNTIME_ROOT/ai-jail-launcher.sh"
+  fi
   cat "$POLICY_FILE" >"$RUNTIME_ROOT/policy.conf"
   if [ -n "${LOCAL_POLICY_FILE:-}" ] && [ -f "$LOCAL_POLICY_FILE" ]; then
     {
@@ -409,27 +433,17 @@ configure_go() {
   "$go_cmd" env -w "GOVCS=${GO_VCS_RULES:-public:off,private:git|ssh}"
 }
 
-record_detected_binaries() {
-  : >"$BINMAP_FILE"
-  for tool in $MANAGED_COMMANDS; do
-    if real_bin=$(resolve_real_binary "$tool" 2>/dev/null); then
-      upper=$(printf '%s' "$tool" | tr '[:lower:]-' '[:upper:]_')
-      printf 'REAL_BIN_%s="%s"\n' "$upper" "$real_bin" >>"$BINMAP_FILE"
-    fi
-  done
-}
-
+# Shims are created unconditionally for every managed command, whether or not
+# the real binary is currently found on PATH: the wrapper resolves the real
+# binary live on each invocation (see manager-wrapper.sh), so a tool installed
+# after this apply is intercepted immediately without a reapply.
 create_shims() {
   for tool in $MANAGED_COMMANDS; do
-    if grep -q "REAL_BIN_$(printf '%s' "$tool" | tr '[:lower:]-' '[:upper:]_')=" "$BINMAP_FILE"; then
-      cat >"$SHIM_ROOT/$tool" <<EOF
+    cat >"$SHIM_ROOT/$tool" <<EOF
 #!/bin/sh
 exec "$WRAPPER_BIN" "$tool" "\$@"
 EOF
-      chmod 755 "$SHIM_ROOT/$tool"
-    else
-      rm -f "$SHIM_ROOT/$tool"
-    fi
+    chmod 755 "$SHIM_ROOT/$tool"
   done
 }
 
@@ -443,9 +457,48 @@ verify_mode_prereqs() {
   return 0
 }
 
+# Preflight, informational only: never fails apply in either mode (unlike
+# verify_mode_prereqs) so an install without ai-jail keeps working exactly as
+# before. Its only job is to surface -- at apply time, not at the first
+# confusing runtime error -- what will actually happen when someone runs
+# claude/gemini/codex: jailed, blocked (hard mode, no launcher), or unjailed
+# with a warning (soft mode, no launcher). Mirrors the fail-open/fail-closed
+# split in run_ai_tool (shims/manager-wrapper.sh).
+verify_ai_jail_status() {
+  [ -n "$AI_COMMANDS" ] || return 0
+
+  case "$PLATFORM" in
+    windows) launcher=${AI_JAIL_LAUNCHER_WINDOWS:-} ;;
+    macos)   launcher=${AI_JAIL_LAUNCHER_MACOS:-} ;;
+    *)       launcher=${AI_JAIL_LAUNCHER_LINUX:-} ;;
+  esac
+
+  if [ -n "$launcher" ] && [ -x "$launcher" ]; then
+    log_info "AI jail configured for $PLATFORM: $launcher (covers: $AI_COMMANDS)"
+    return 0
+  fi
+
+  if command -v ai-jail >/dev/null 2>&1; then
+    log_warn "ai-jail is installed but no launcher is configured for $PLATFORM (AI_JAIL_LAUNCHER_$(printf '%s' "$PLATFORM" | tr '[:lower:]' '[:upper:]') is empty in policy)"
+  else
+    log_warn "ai-jail is not installed/on PATH for $PLATFORM"
+  fi
+
+  if [ "$ENFORCEMENT_MODE" = "hard" ]; then
+    log_warn "Hard mode: $AI_COMMANDS will be BLOCKED at runtime until a launcher is configured (see policy/local-policy.example.conf)"
+  else
+    log_warn "Soft mode: $AI_COMMANDS will run UNJAILED until a launcher is configured (see policy/local-policy.example.conf)"
+  fi
+  return 0
+}
+
 apply_cmd() {
   parse_scope_flag "$@"
   ENFORCEMENT_MODE=${MODE:-${DEFAULT_MODE:-soft}}
+  if [ "${SCOPE:-user}" = "all" ]; then
+    echo "ERROR: --scope all is only supported by 'uninstall'" >&2
+    exit 2
+  fi
   if [ "${SCOPE:-user}" = "machine" ]; then
     apply_machine_cmd
   else
@@ -459,9 +512,9 @@ apply_user_cmd() {
   log_json_event "INFO" "apply.started" "install.sh" "apply" "started" "$ENFORCEMENT_MODE"
   ensure_dirs
   verify_mode_prereqs
+  verify_ai_jail_status
   install_runtime
   save_runtime_state "$ENFORCEMENT_MODE"
-  record_detected_binaries
   create_shims
   apply_posix_profiles
   if platform_supports_windows_helper; then
@@ -478,6 +531,7 @@ apply_user_cmd() {
   log_json_event "INFO" "apply.completed" "install.sh" "apply" "success" "policy applied"
 }
 
+
 apply_machine_cmd() {
   require_root
   setup_system_paths
@@ -485,20 +539,43 @@ apply_machine_cmd() {
   log_info "Applying policy mode: $ENFORCEMENT_MODE (scope: machine)"
   log_json_event "INFO" "apply.started" "install.sh" "apply-machine" "started" "$ENFORCEMENT_MODE"
   ensure_dirs
-  chmod 750 "$LOG_ROOT"
+  # World-writable + sticky, like /tmp: any local user's wrapper invocation
+  # (it runs as themselves, not root) can create its own per-run log file and
+  # append to the shared aggregate log -- no dedicated OS group needed. This
+  # used to be a setgid root:supply-gate group instead; that group's creation
+  # (groupadd/dseditgroup) could fail for reasons unrelated to enforcement
+  # itself (GID collision, hardened box, AD/LDAP-backed group database), and
+  # because that call ran bare under `set -eu` before install_runtime/
+  # create_shims ever ran, a failure there silently aborted the ENTIRE apply
+  # -- leaving the machine-scope root completely absent while a wrapping
+  # installer (e.g. the .deb postinst) still reported success. Sticky bit
+  # stops one user from deleting/renaming another's log file; the aggregate
+  # JSONL log is append-only in practice so concurrent writers don't collide.
+  chmod 1777 "$LOG_ROOT"
+  touch "$AGGREGATE_LOG"
+  chmod 666 "$AGGREGATE_LOG"
   verify_mode_prereqs
+  verify_ai_jail_status
   install_runtime
   save_runtime_state "$ENFORCEMENT_MODE"
-  record_detected_binaries
   create_shims
   write_profile_snippet
   apply_system_profiles
   # configure_go writes to the current user's GOENV; in machine scope this covers root.
   # Non-fatal: failure is logged but does not abort the rest of the apply.
   configure_go || log_warn "configure_go failed in machine scope; skipping go env hardening"
-  # Apply package-manager configs to root
-  apply_user_configs_for_home "/root" "/root/.config" || \
-    log_warn "Failed to configure root user"
+  # Apply package-manager configs to the root account. root's home differs by
+  # platform (/var/root on macOS, /root elsewhere), so resolve it per platform
+  # and skip when it doesn't exist -- otherwise macOS, which has no /root, spews
+  # "mkdir: /root: Read-only file system" noise on every apply.
+  case "$PLATFORM" in
+    macos) root_home="/var/root" ;;
+    *)     root_home="/root" ;;
+  esac
+  if [ -d "$root_home" ]; then
+    apply_user_configs_for_home "$root_home" "$root_home/.config" || \
+      log_warn "Failed to configure root user"
+  fi
   # Apply to all local users
   list_local_users | while IFS=: read -r _user user_home; do
     [ -d "$user_home" ] || continue
@@ -508,7 +585,7 @@ apply_machine_cmd() {
   done
   rotate_logs
   save_status "applied"
-  log_info "Machine-scope policy applied. Open a new shell (or run 'hash -r') to pick up PATH changes."
+  log_info "Machine-scope policy applied. Users must start a new shell/login session to pick up PATH changes."
   log_json_event "INFO" "apply.completed" "install.sh" "apply-machine" "success" "machine scope"
 }
 
@@ -536,7 +613,7 @@ audit_user_cmd() {
   log_info "Auditing local hardening state in mode: $ENFORCEMENT_MODE"
   log_json_event "INFO" "audit.started" "install.sh" "audit" "started" "$ENFORCEMENT_MODE"
 
-  for file in "$COMMON_RUNTIME" "$WRAPPER_BIN" "$BINMAP_FILE" "$RUNSTATE_FILE" "$PROFILE_SNIPPET"; do
+  for file in "$COMMON_RUNTIME" "$WRAPPER_BIN" "$RUNSTATE_FILE" "$PROFILE_SNIPPET"; do
     if [ ! -f "$file" ]; then
       log_error "Missing required runtime file: $file"
       failures=$((failures + 1))
@@ -576,11 +653,9 @@ audit_user_cmd() {
 
   for tool in $MANAGED_COMMANDS; do
     shim="$SHIM_ROOT/$tool"
-    if grep -q "REAL_BIN_$(printf '%s' "$tool" | tr '[:lower:]-' '[:upper:]_')=" "$BINMAP_FILE" 2>/dev/null; then
-      if [ ! -x "$shim" ]; then
-        log_error "Missing shim for detected tool: $tool"
-        failures=$((failures + 1))
-      fi
+    if [ ! -x "$shim" ]; then
+      log_error "Missing shim for: $tool"
+      failures=$((failures + 1))
     fi
   done
 
@@ -611,7 +686,7 @@ audit_machine_cmd() {
   log_info "Auditing machine-scope hardening state in mode: $ENFORCEMENT_MODE"
   log_json_event "INFO" "audit.started" "install.sh" "audit-machine" "started" "$ENFORCEMENT_MODE"
 
-  for file in "$COMMON_RUNTIME" "$WRAPPER_BIN" "$BINMAP_FILE" "$RUNSTATE_FILE" "$PROFILE_SNIPPET"; do
+  for file in "$COMMON_RUNTIME" "$WRAPPER_BIN" "$RUNSTATE_FILE" "$PROFILE_SNIPPET"; do
     if [ ! -f "$file" ]; then
       log_error "Missing required runtime file: $file"
       failures=$((failures + 1))
@@ -625,11 +700,9 @@ audit_machine_cmd() {
 
   for tool in $MANAGED_COMMANDS; do
     shim="$SHIM_ROOT/$tool"
-    if grep -q "REAL_BIN_$(printf '%s' "$tool" | tr '[:lower:]-' '[:upper:]_')=" "$BINMAP_FILE" 2>/dev/null; then
-      if [ ! -x "$shim" ]; then
-        log_error "Missing shim for detected tool: $tool"
-        failures=$((failures + 1))
-      fi
+    if [ ! -x "$shim" ]; then
+      log_error "Missing shim for: $tool"
+      failures=$((failures + 1))
     fi
   done
 
@@ -640,15 +713,23 @@ audit_machine_cmd() {
 
   audit_user_pkg_configs() {
     username=$1; home_dir=$2; config_dir=$3
-    ok=1
-    contains_marker "$home_dir/.npmrc"        || { log_warn "npmrc missing managed block: $username"; ok=0; }
-    contains_marker "$home_dir/.bunfig.toml"  || { log_warn "bunfig missing managed block: $username"; ok=0; }
-    contains_marker "$config_dir/pip/pip.conf" || { log_warn "pip.conf missing managed block: $username"; ok=0; }
-    contains_marker "$home_dir/.cargo/config.toml" || { log_warn "cargo config missing managed block: $username"; ok=0; }
-    return $ok
+    # missing=0 means all managed blocks present. Return 0 (shell success) in
+    # that case and 1 when anything is missing -- callers use `|| failures=...`,
+    # so the return code must follow shell convention, not a truthy flag.
+    missing=0
+    contains_marker "$home_dir/.npmrc"        || { log_warn "npmrc missing managed block: $username"; missing=1; }
+    contains_marker "$home_dir/.bunfig.toml"  || { log_warn "bunfig missing managed block: $username"; missing=1; }
+    contains_marker "$config_dir/pip/pip.conf" || { log_warn "pip.conf missing managed block: $username"; missing=1; }
+    contains_marker "$home_dir/.cargo/config.toml" || { log_warn "cargo config missing managed block: $username"; missing=1; }
+    return $missing
   }
 
-  audit_user_pkg_configs "root" "/root" "/root/.config" || failures=$((failures + 1))
+  # Match apply_machine_cmd: root's home is /var/root on macOS, /root elsewhere.
+  case "$PLATFORM" in
+    macos) root_home="/var/root" ;;
+    *)     root_home="/root" ;;
+  esac
+  audit_user_pkg_configs "root" "$root_home" "$root_home/.config" || failures=$((failures + 1))
   list_local_users | while IFS=: read -r username user_home; do
     [ -d "$user_home" ] || continue
     audit_user_pkg_configs "$username" "$user_home" "$user_home/.config" || true
@@ -672,6 +753,10 @@ audit_machine_cmd() {
 
 audit_cmd() {
   parse_scope_flag "$@"
+  if [ "${SCOPE:-user}" = "all" ]; then
+    echo "ERROR: --scope all is only supported by 'uninstall'" >&2
+    exit 2
+  fi
   if [ "${SCOPE:-user}" = "machine" ]; then
     audit_machine_cmd
   else
@@ -690,15 +775,21 @@ uninstall_cmd() {
   # When no explicit --scope is given and we are root, default uninstall to machine
   # scope so the system-wide layer (/etc/profile.d, system rc files, /opt state) is
   # fully removed. A non-root invocation keeps user scope (machine requires root).
+  # Uses plain echo, not log_info: log_init (which defines RUN_LOG_TXT) hasn't run
+  # yet at this point, and under set -eu referencing it early aborts the script
+  # before anything is removed.
   if [ -z "$SCOPE" ] && [ "$(id -u)" = "0" ]; then
     SCOPE=machine
-    log_info "No --scope given and running as root; defaulting uninstall to machine scope"
+    echo "No --scope given and running as root; defaulting uninstall to machine scope" >&2
   fi
-  if [ "${SCOPE:-user}" = "machine" ]; then
-    uninstall_machine_cmd
-  else
-    uninstall_user_cmd
-  fi
+  case "${SCOPE:-user}" in
+    machine|all)
+      uninstall_machine_cmd
+      ;;
+    *)
+      uninstall_user_cmd
+      ;;
+  esac
 }
 
 uninstall_user_cmd() {
@@ -715,6 +806,7 @@ uninstall_user_cmd() {
     call_windows_helper Remove || true
   fi
   rm -rf "$STATE_ROOT"
+  detach_logging
   log_info "Uninstall complete"
 }
 
@@ -726,14 +818,20 @@ uninstall_machine_cmd() {
   log_json_event "INFO" "uninstall.started" "install.sh" "uninstall-machine" "started" "machine scope"
   remove_system_profiles
   # Remove from root
-  remove_user_configs_for_home "/root" "/root/.config"
-  # Remove from all local users
+  remove_user_configs_for_home "/root" "/root/.config" || \
+    log_warn "Failed to fully remove config for root"
+  # Remove from all local users. Each user's removal is guarded with
+  # || log_warn: without it, a single failure (e.g. one unwritable file)
+  # aborts the whole loop under set -e and silently skips every remaining
+  # user, which is what made past runs look like they did nothing.
   list_local_users | while IFS=: read -r _user user_home; do
     [ -d "$user_home" ] || continue
     log_info "Removing from user: $_user ($user_home)"
-    remove_user_configs_for_home "$user_home" "$user_home/.config"
+    remove_user_configs_for_home "$user_home" "$user_home/.config" || \
+      log_warn "Failed to fully remove config for user: $_user"
   done
   rm -rf "$STATE_ROOT"
+  detach_logging
   log_info "Machine-scope uninstall complete"
   log_json_event "INFO" "uninstall.completed" "install.sh" "uninstall-machine" "success" "machine scope"
 }
@@ -771,7 +869,7 @@ status_cmd() {
 
 case "$SUBCOMMAND" in
   apply) apply_cmd "$@" ;;
-  audit) audit_cmd ;;
+  audit) audit_cmd "$@" ;;
   repair) repair_cmd ;;
   status) status_cmd ;;
   install-optional-tools) install_optional_tools_cmd "$@" ;;

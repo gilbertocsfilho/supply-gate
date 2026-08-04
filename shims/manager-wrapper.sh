@@ -21,13 +21,14 @@ command_text="$tool${*:+ }$*"
 log_info "Intercepted command: $command_text"
 log_json_event "INFO" "command.intercepted" "$tool" "$command_text" "started" "wrapper invoked"
 
-real_var=$(printf 'REAL_BIN_%s' "$(printf '%s' "$tool" | tr '[:lower:]-' '[:upper:]_')")
-# shellcheck disable=SC2086
-eval "real_bin=\${$real_var:-}"
-
-if [ -z "${real_bin:-}" ] || [ ! -x "$real_bin" ]; then
-  log_error "Real binary not mapped for $tool"
-  log_json_event "ERROR" "command.blocked" "$tool" "$command_text" "blocked" "missing real binary"
+# Resolved live via PATH on every invocation (not a value cached at apply
+# time) so a tool installed after the last `install.sh apply` is picked up
+# immediately, with no reapply needed. resolve_real_binary/find_real_binary
+# (lib/common.sh) already skip over our own shims by content, so this can't
+# resolve back to itself even with multiple shim dirs on PATH.
+if ! real_bin=$(resolve_real_binary "$tool" 2>/dev/null); then
+  log_error "Real binary not found on PATH for $tool"
+  log_json_event "ERROR" "command.blocked" "$tool" "$command_text" "blocked" "no real binary found on PATH"
   exit 1
 fi
 
@@ -59,23 +60,76 @@ if [ "$mode" = "hard" ]; then
 fi
 
 run_ai_tool() {
-  if [ "$PLATFORM" = "windows" ]; then
-    backend=${AI_JAIL_BACKEND_WINDOWS:-}
-    launcher=${AI_JAIL_LAUNCHER_WINDOWS:-}
-  else
-    backend=${AI_JAIL_BACKEND_MACLINUX:-}
-    launcher=${AI_JAIL_LAUNCHER_MACLINUX:-}
+  # Emergency kill switch. Sets aside every other AI-jail decision below: an
+  # operator facing a broken/misconfigured jail (blocking legitimate AI tool
+  # use fleet-wide) can force an unjailed run without editing policy or
+  # reapplying. Always honored, in both soft and hard mode, and logged as its
+  # own event so the bypass shows up in the audit trail. See GUIDE.md "AI Jail"
+  # section for how to set this for a single shell vs machine-wide.
+  if [ "${SCP_AI_JAIL_BYPASS:-0}" = "1" ]; then
+    log_warn "AI jail bypass forced via SCP_AI_JAIL_BYPASS=1; running $tool unjailed"
+    log_json_event "WARN" "command.allowed" "$tool" "$command_text" "started" "ai jail bypass forced"
+    "$real_bin" "$@"
+    return
   fi
 
+  # Re-entrancy guard. If we are already running inside an AI jail, do NOT jail
+  # again -- run the real binary directly. This fires in two cases:
+  #   1. Our own launcher below re-invokes the shim (it exports SCP_IN_AIJAIL=1),
+  #      so `claude` -> shim -> launcher -> jailed `claude` -> shim would
+  #      otherwise recurse forever.
+  #   2. A user who launches the jail themselves (e.g. `ai-jail claude`) exports
+  #      SCP_IN_AIJAIL=1 to tell the inner shim it is already contained.
+  # Mirrors the SCP_IN_SCFW guard in run_package_manager. Without it, the shim
+  # intercepted inside ai-jail tried to jail a second time and failed with
+  # "AI jail launcher missing".
+  if [ "${SCP_IN_AIJAIL:-0}" = "1" ]; then
+    log_info "Already inside AI jail; delegating to real binary: $real_bin"
+    log_json_event "INFO" "command.allowed" "$tool" "$command_text" "started" "already jailed"
+    "$real_bin" "$@"
+    return
+  fi
+
+  # Backend/launcher are per-OS, not shared between macOS and Linux: sandbox
+  # tooling (bwrap vs sandbox-exec vs WSL) and install paths differ enough
+  # that one machine's config should never silently apply to another OS.
+  case "$PLATFORM" in
+    windows)
+      backend=${AI_JAIL_BACKEND_WINDOWS:-}
+      launcher=${AI_JAIL_LAUNCHER_WINDOWS:-}
+      ;;
+    macos)
+      backend=${AI_JAIL_BACKEND_MACOS:-}
+      launcher=${AI_JAIL_LAUNCHER_MACOS:-}
+      ;;
+    *)
+      backend=${AI_JAIL_BACKEND_LINUX:-}
+      launcher=${AI_JAIL_LAUNCHER_LINUX:-}
+      ;;
+  esac
+
   if [ -z "$launcher" ] || [ ! -x "$launcher" ]; then
-    log_error "AI jail launcher missing for $tool on $PLATFORM"
-    log_json_event "ERROR" "command.blocked" "$tool" "$command_text" "blocked" "missing ai jail launcher"
-    exit 1
+    # Fail-closed in hard mode (matches require_hard_value elsewhere: hard
+    # mode must not silently run unjailed). Fail-open in soft mode: soft is
+    # advisory everywhere else in this wrapper, so an unconfigured/broken jail
+    # here warns and lets the command through instead of hard-blocking every
+    # AI tool invocation on the host.
+    if [ "$mode" = "hard" ]; then
+      log_error "AI jail launcher missing for $tool on $PLATFORM (hard mode blocks)"
+      log_json_event "ERROR" "command.blocked" "$tool" "$command_text" "blocked" "missing ai jail launcher"
+      exit 1
+    fi
+    log_warn "AI jail launcher missing for $tool on $PLATFORM; running unjailed (soft mode)"
+    log_json_event "WARN" "command.allowed" "$tool" "$command_text" "started" "ai jail unavailable, unjailed in soft mode"
+    "$real_bin" "$@"
+    return
   fi
 
   log_info "Launching $tool through jail backend: $backend"
   log_json_event "INFO" "command.jailed" "$tool" "$command_text" "started" "$backend"
-  "$launcher" "$real_bin" "$@"
+  # Mark the child so the shim it re-invokes (jailed `claude` -> our shim again)
+  # takes the guard branch above instead of recursing into another jail.
+  SCP_IN_AIJAIL=1 "$launcher" "$real_bin" "$@"
 }
 
 run_package_manager() {

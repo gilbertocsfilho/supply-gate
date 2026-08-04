@@ -1,0 +1,19 @@
+#!/bin/sh
+# Runs install.sh uninstall --scope machine BEFORE dpkg removes the payload
+# (prerm, not postrm: install.sh must still be on disk to run its own
+# uninstall). Removes shims, PATH/profile blocks, and the machine STATE_ROOT
+# (/opt/supply-gate) -- see uninstall_machine_cmd in install.sh.
+set -e
+
+PAYLOAD_DIR="/usr/share/supply-gate"
+
+case "$1" in
+  remove|purge)
+    if [ -x "$PAYLOAD_DIR/install.sh" ]; then
+      "$PAYLOAD_DIR/install.sh" uninstall --scope machine || \
+        echo "supply-gate: uninstall hook failed; some managed blocks/state may remain" >&2
+    fi
+    ;;
+esac
+
+exit 0

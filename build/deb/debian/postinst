@@ -1,0 +1,31 @@
+#!/bin/sh
+# supply-gate postinst: runs install.sh apply --scope machine right after
+# dpkg unpacks the payload to /usr/share/supply-gate, so `apt install
+# ./supply-gate_*.deb` (or a KACE-pushed `dpkg -i`) enforces immediately
+# with no manual follow-up step.
+set -e
+
+PAYLOAD_DIR="/usr/share/supply-gate"
+
+case "$1" in
+  configure)
+    mode="${SUPPLY_GATE_MODE:-soft}"
+    if [ -x "$PAYLOAD_DIR/install.sh" ]; then
+      # Deliberately NOT swallowed with `|| echo ...`: a caught-and-ignored
+      # failure here used to make `dpkg -i`/`apt install` report success
+      # (exit 0, package shown as `ii`) even when apply aborted before
+      # creating anything under the machine STATE_ROOT -- silently leaving a
+      # host completely unenforced with no visible signal to KACE or whoever
+      # is watching the deploy. Let a real failure fail the postinst: dpkg
+      # then reports the package as not fully configured, which is the
+      # honest, checkable signal.
+      if ! "$PAYLOAD_DIR/install.sh" apply --mode "$mode" --scope machine; then
+        echo "supply-gate: apply FAILED -- see output above for the actual error." >&2
+        echo "supply-gate: re-run manually to debug: $PAYLOAD_DIR/install.sh apply --mode $mode --scope machine" >&2
+        exit 1
+      fi
+    fi
+    ;;
+esac
+
+exit 0

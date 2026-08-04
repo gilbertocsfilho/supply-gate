@@ -45,6 +45,28 @@ detect_platform() {
 
 PLATFORM=$(detect_platform)
 
+# Service/agent contexts (a dpkg/rpm maintainer script, a KACE agent run, cron,
+# a systemd unit without a PAM session) commonly invoke this with no $HOME set
+# at all. default_state_root/default_config_root below need SOME value even
+# when the caller is about to override STATE_ROOT anyway (e.g.
+# apply_machine_cmd's setup_system_paths), because this file computes a
+# fallback STATE_ROOT at *source* time, before that override gets a chance to
+# run -- under `set -u` an unset $HOME here previously crashed with "HOME:
+# parameter not set" before install.sh's own subcommand dispatch ever started,
+# which is exactly what surfaced once the .deb postinst stopped swallowing
+# apply failures. Resolve a real home directory defensively instead.
+if [ -z "${HOME:-}" ]; then
+  case "$PLATFORM" in
+    macos)
+      HOME=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+      ;;
+    *)
+      HOME=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
+      ;;
+  esac
+  HOME=${HOME:-/root}
+fi
+
 default_state_root() {
   case "$PLATFORM" in
     windows)
@@ -68,14 +90,26 @@ default_config_root() {
   fi
 }
 
-STATE_ROOT=${INSTALL_ROOT_OVERRIDE:-"$(default_state_root)"}
+if [ -n "${INSTALL_ROOT_OVERRIDE:-}" ]; then
+  STATE_ROOT=$INSTALL_ROOT_OVERRIDE
+elif [ "$(basename "$CALLER_DIR")" = "runtime" ] && [ -f "$CALLER_DIR/state.conf" ]; then
+  # We are the INSTALLED runtime copy: the wrapper (or any tool) sourced
+  # <STATE_ROOT>/runtime/common.sh. Derive STATE_ROOT from our own location so
+  # machine-scope installs under /opt/supply-gate resolve binmap.conf/state.conf
+  # instead of falling back to the invoking user's $HOME (which made the wrapper
+  # abort with "Real binary not mapped"). Also fixes user-scope runs launched
+  # with a different $HOME. install.sh, sourced from the repo, has a CALLER_DIR
+  # whose basename is not "runtime", so it keeps the default/override behavior.
+  STATE_ROOT=$(CDPATH= cd -- "$CALLER_DIR/.." && pwd)
+else
+  STATE_ROOT=$(default_state_root)
+fi
 CONFIG_ROOT=${CONFIG_ROOT_OVERRIDE:-"$(default_config_root)"}
 LOG_ROOT="$STATE_ROOT/logs"
 SHIM_ROOT="$STATE_ROOT/shims"
 RUNTIME_ROOT="$STATE_ROOT/runtime"
 ATT_ROOT="$STATE_ROOT/attestation"
 RUNSTATE_FILE="$STATE_ROOT/runtime/state.conf"
-BINMAP_FILE="$STATE_ROOT/runtime/binmap.conf"
 PROFILE_SNIPPET="$STATE_ROOT/runtime/profile.sh"
 WRAPPER_BIN="$STATE_ROOT/runtime/manager-wrapper.sh"
 COMMON_RUNTIME="$STATE_ROOT/runtime/common.sh"
@@ -116,13 +150,44 @@ ensure_dirs() {
   mkdir -p "$STATE_ROOT" "$LOG_ROOT" "$SHIM_ROOT" "$RUNTIME_ROOT" "$ATT_ROOT"
 }
 
+# Print "uid:gid" of a path, or nothing on failure. Tries GNU stat (-c) and
+# BSD/macOS stat (-f) and validates the result is strictly digits:digits --
+# GNU `stat -f` does NOT error on a format string, it prints filesystem info,
+# so we must reject that garbage rather than trust exit status alone.
+path_owner() {
+  for _opt in -c -f; do
+    _o=$(stat "$_opt" '%u:%g' "$1" 2>/dev/null) || continue
+    case "$_o" in
+      ''|*[!0-9:]*) continue ;;
+      *:*) printf '%s' "$_o"; return 0 ;;
+    esac
+  done
+}
+
 log_init() {
-  ensure_dirs
+  ensure_dirs 2>/dev/null || true
   LOG_CONTEXT=${1:-tool}
   LOG_RUN_ID="$(timestamp_slug)-$$"
   RUN_LOG_TXT="$LOG_ROOT/$LOG_RUN_ID-$LOG_CONTEXT.log"
-  : >"$RUN_LOG_TXT"
-  touch "$AGGREGATE_LOG"
+  # Logging is best-effort and must NEVER break or spew errors onto an
+  # intercepted command. An unprivileged user running a shim against a
+  # root-owned machine-scope log dir it can't write to (e.g. a leftover
+  # root-only LOG_ROOT from before apply_machine_cmd made it 1777) cannot
+  # create these files, which surfaced as "Operation not permitted" on the
+  # line below. Fall back to /dev/null so the command still runs;
+  # privileged/admin contexts keep full logging.
+  if ! (: >"$RUN_LOG_TXT") 2>/dev/null; then
+    RUN_LOG_TXT="/dev/null"
+  fi
+  if ! (touch "$AGGREGATE_LOG") 2>/dev/null; then
+    AGGREGATE_LOG="/dev/null"
+  fi
+  # Best-effort: only the owner (root, from apply --scope machine) or root
+  # itself can chmod. LOG_ROOT/AGGREGATE_LOG are world-writable from
+  # apply_machine_cmd (no dedicated OS group involved -- see that function),
+  # so this only matters for a log file created before that permission model,
+  # which self-heals here.
+  chmod go+w "$AGGREGATE_LOG" 2>/dev/null || true
 }
 
 log_line() {
@@ -130,11 +195,7 @@ log_line() {
   shift
   msg=$*
   ts=$(timestamp_utc)
-  if [ -n "${RUN_LOG_TXT:-}" ]; then
-    printf '%s [%s] %s\n' "$ts" "$level" "$msg" | tee -a "$RUN_LOG_TXT"
-  else
-    printf '%s [%s] %s\n' "$ts" "$level" "$msg"
-  fi
+  printf '%s [%s] %s\n' "$ts" "$level" "$msg" | tee -a "$RUN_LOG_TXT"
 }
 
 log_json_event() {
@@ -162,6 +223,16 @@ log_json_event() {
     "$(json_escape "$detail")" >>"$AGGREGATE_LOG"
 }
 
+# Point logging at /dev/null. Call this after removing $STATE_ROOT during
+# uninstall: log_init put both log targets inside that tree, so any log_info /
+# log_json_event issued after the rm would fail with "No such file or directory"
+# (the visible "tee: ...uninstall.log" error). tee to /dev/null still echoes the
+# message to the terminal; the JSON append is silently discarded.
+detach_logging() {
+  RUN_LOG_TXT="/dev/null"
+  AGGREGATE_LOG="/dev/null"
+}
+
 log_info() {
   log_line INFO "$@"
 }
@@ -178,10 +249,6 @@ load_runtime_state() {
   if [ -f "$RUNSTATE_FILE" ]; then
     # shellcheck disable=SC1090
     . "$RUNSTATE_FILE"
-  fi
-  if [ -f "$BINMAP_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$BINMAP_FILE"
   fi
 }
 
@@ -220,7 +287,12 @@ append_managed_block() {
       $0 == end { skip=0; next }
       skip != 1 { print }
     ' "$target" >"$tmp"
-    mv "$tmp" "$target"
+    # Rewrite in place (cat >, not mv) so the file keeps its original owner and
+    # mode. mv replaces the inode, which left users' own dotfiles owned by root
+    # after apply --scope machine (run as root) -- locking them out of editing
+    # their own ~/.zshrc. cat truncates and rewrites the existing inode.
+    cat "$tmp" >"$target"
+    rm -f "$tmp"
   fi
   {
     [ -s "$target" ] && printf '\n'
@@ -239,7 +311,22 @@ remove_managed_block() {
     $0 == end { skip=0; next }
     skip != 1 { print }
   ' "$target" >"$tmp"
-  mv "$tmp" "$target"
+  # See append_managed_block: rewrite in place to preserve owner/mode.
+  cat "$tmp" >"$target"
+  rm -f "$tmp"
+}
+
+
+# True if a candidate binary is one of our own shims (points back at
+# manager-wrapper.sh) rather than a real tool binary. Detected by content,
+# not by comparing directories to $SHIM_ROOT: stale or parallel installs
+# (e.g. a machine-scope install alongside a user-scope one, or a reinstall
+# at a different STATE_ROOT) leave other shim directories earlier in PATH,
+# and a path-only check would resolve back into a shim, causing the wrapper
+# to invoke itself in an infinite loop.
+is_managed_shim() {
+  candidate=$1
+  head -c 4096 "$candidate" 2>/dev/null | grep -q "manager-wrapper.sh"
 }
 
 find_real_binary() {
@@ -248,9 +335,10 @@ find_real_binary() {
   IFS=:
   for dir in $PATH; do
     [ -n "$dir" ] || continue
-    [ "$dir" = "$SHIM_ROOT" ] && continue
-    if [ -x "$dir/$tool" ] && [ ! -d "$dir/$tool" ]; then
-      printf '%s\n' "$dir/$tool"
+    candidate="$dir/$tool"
+    if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
+      is_managed_shim "$candidate" && continue
+      printf '%s\n' "$candidate"
       IFS=$old_ifs
       return 0
     fi
@@ -389,11 +477,41 @@ apply_user_configs_for_home() {
   configure_bun
   configure_pip
   configure_cargo
+  # Prepend the shim dir from the END of each user's shell rc. The system-wide
+  # layer (/etc/profile.d, /etc/bash.bashrc) is sourced BEFORE the user's own rc,
+  # so a user who does `export PATH=...:$PATH` (cargo, nvm, pyenv, ~/.local/bin)
+  # buries the shims and the interception silently stops working. bash and dash
+  # have no system file sourced AFTER the user rc (only zsh's zlogin does), so the
+  # per-user rc is the only place that reliably wins. Mirrors apply_posix_profiles
+  # and is the symmetric counterpart to the removals in remove_user_configs_for_home.
+  block=". \"$PROFILE_SNIPPET\""
+  append_managed_block "$target_home/.profile" "$block"
+  append_managed_block "$target_home/.bashrc" "$block"
+  append_managed_block "$target_home/.zshrc" "$block"
+  # In machine scope these files are written by root inside a user's home. Give
+  # them back to the home's owner so the user can still manage their own
+  # dotfiles. append_managed_block preserves the owner of files that already
+  # existed; this repairs any left root-owned by earlier versions and claims the
+  # dirs/files we created fresh. Best-effort: no-op (and harmless) in user scope.
+  owner=$(path_owner "$target_home")
+  if [ -n "$owner" ]; then
+    for _f in "$HOME/.npmrc" "$HOME/.bunfig.toml" "$CONFIG_ROOT/pip/pip.conf" \
+              "$HOME/.cargo/config.toml" "$HOME/.profile" "$HOME/.bashrc" \
+              "$HOME/.zshrc" "$CONFIG_ROOT/pip" "$HOME/.cargo"; do
+      [ -e "$_f" ] && chown "$owner" "$_f" 2>/dev/null || true
+    done
+  fi
   HOME=$_saved_home
   CONFIG_ROOT=$_saved_config
 }
 
-# Remove managed blocks from all package-manager configs under a given home.
+# Remove managed blocks from all package-manager configs under a given home,
+# plus that user's own per-user install state (~/.local/share/<name> on both
+# Linux and macOS), in case they ran a --scope user apply of their own before
+# or alongside a --scope machine install. Without this, machine/all-scope
+# uninstall only strips shared dotfile blocks and never removes the user's
+# own shims, leaving tools like claude still routed through the wrapper in
+# any shell that had that directory in PATH before the dotfiles were cleaned.
 remove_user_configs_for_home() {
   target_home=$1
   target_config=$2
@@ -404,6 +522,9 @@ remove_user_configs_for_home() {
   remove_managed_block "$target_home/.bunfig.toml"
   remove_managed_block "$target_config/pip/pip.conf"
   remove_managed_block "$target_home/.cargo/config.toml"
+  if [ -n "$target_home" ]; then
+    rm -rf "$target_home/.local/share/${STATE_DIR_NAME:-supply-chain-protect}"
+  fi
 }
 
 # Write /etc/profile.d/supply-gate.sh and add managed blocks to system rc files.
@@ -417,20 +538,44 @@ apply_system_profiles() {
   for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc; do
     [ -f "$sys_rc" ] && append_managed_block "$sys_rc" "$block"
   done
+  # zsh sources the *rc files above BEFORE the user's ~/.zshrc, so the PATH
+  # prepend they carry is undone by the user's own PATH edits (Homebrew,
+  # ~/.local/bin, ...) and the shims never take precedence. zlogin is the only
+  # system-wide file zsh sources AFTER ~/.zshrc (for login shells, which the
+  # macOS/Linux terminals use), so prepend the shim dir there too. Unlike the rc
+  # files above we must NOT skip it when absent -- append_managed_block creates
+  # it. The global-rc location differs by distro: macOS/Fedora/Arch read
+  # /etc/zlogin, Debian/Ubuntu read /etc/zsh/zlogin. Write /etc/zlogin always and
+  # /etc/zsh/zlogin only when /etc/zsh exists (its presence is how Debian-family
+  # zsh signals it reads that dir). Whichever the running zsh ignores is harmless.
+  if command -v zsh >/dev/null 2>&1; then
+    append_managed_block /etc/zlogin "$block"
+    [ -d /etc/zsh ] && append_managed_block /etc/zsh/zlogin "$block"
+  fi
+  # Explicit return: without it, this function's exit status is whatever the
+  # last [ -f ] test returned. If the last file in the list above doesn't
+  # exist (e.g. no /etc/zsh/zshrc on a box without system-wide zsh), that's a
+  # nonzero status, and since this function is called bare, set -eu aborts
+  # the whole script here — silently skipping every step after it.
+  return 0
 }
 
 # Remove /etc/profile.d/supply-gate.sh and managed blocks from system rc files.
 remove_system_profiles() {
   rm -f /etc/profile.d/supply-gate.sh
-  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc; do
+  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc /etc/zlogin /etc/zsh/zlogin; do
     [ -f "$sys_rc" ] && remove_managed_block "$sys_rc"
   done
+  # See the matching comment in apply_system_profiles: without this, the
+  # function's exit status leaks from the last [ -f ] test, silently
+  # aborting the rest of uninstall under set -eu when a listed file is missing.
+  return 0
 }
 
 # Count managed files under a home directory; print "username: N files managed" or
 # "username: not configured". A non-empty 4th argument indicates the system-wide
-# profile layer is active, in which case a user with no per-user package configs is
-# still covered (machine scope intentionally does not write per-user shell dotfiles).
+# profile layer is active, in which case a user whose home was skipped (e.g. no
+# home dir) is still partially covered by /etc/profile.d.
 status_user() {
   username=$1
   home_dir=$2

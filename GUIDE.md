@@ -316,7 +316,85 @@ Esta recomendacao assume uma avaliacao feita em 23 de maio de 2026, considerando
 - Nao acople `apply`, `audit` ou `repair` a presenca dele.
 - Nao mova o centro deste projeto para agregacao de scanners externos.
 
-## 19. Matriz de Cobertura
+## 19. AI Jail: Validacao, Separacao por Plataforma e Kill Switch de Emergencia
+
+O `Supply Gate` nao implementa sandboxing por conta propria: ele delega a
+`ai-jail` (ou equivalente) atraves de um launcher configurado em policy, e o
+wrapper (`shims/manager-wrapper.sh`, funcao `run_ai_tool`) decide o que fazer
+quando esse launcher nao esta configurado ou nao e executavel.
+
+### Validacao no `apply`
+
+Todo `./install.sh apply` (soft ou hard, user ou machine) roda
+`verify_ai_jail_status` antes de instalar o runtime. Essa validacao:
+
+- verifica se `ai-jail` esta no `PATH` e se ha launcher configurado para a
+  plataforma atual;
+- **nunca falha o apply** (diferente de `verify_mode_prereqs`, que bloqueia
+  `hard` sem registry configurado) -- ela so avisa, no log e no `stdout`,
+  qual sera o comportamento real de `claude`/`gemini`/`codex` neste host;
+- em modo `hard` sem launcher: avisa que os comandos de IA serao
+  **bloqueados** em runtime;
+- em modo `soft` sem launcher: avisa que os comandos de IA vao rodar
+  **sem sandbox** em runtime.
+
+Rode `./install.sh apply` (ou `audit`) sempre que instalar/atualizar o
+`ai-jail`, para confirmar que o launcher foi detectado antes de depender dele
+em producao.
+
+### Separacao por plataforma (Windows, Linux, macOS)
+
+Cada sistema operacional tem seu proprio par de variaveis de policy -- elas
+nunca sao compartilhadas entre plataformas, porque o mecanismo de sandbox
+(`bwrap` no Linux, `sandbox-exec` no macOS, WSL no Windows) e os caminhos de
+instalacao do launcher divergem:
+
+| Plataforma | Backend | Launcher |
+| --- | --- | --- |
+| Linux | `AI_JAIL_BACKEND_LINUX` | `AI_JAIL_LAUNCHER_LINUX` |
+| macOS | `AI_JAIL_BACKEND_MACOS` | `AI_JAIL_LAUNCHER_MACOS` |
+| Windows | `AI_JAIL_BACKEND_WINDOWS` | `AI_JAIL_LAUNCHER_WINDOWS` |
+
+Configure apenas a variavel da plataforma onde a policy sera aplicada, em
+`policy/local-policy.conf` (ver `policy/local-policy.example.conf`). O wrapper
+le a variavel certa automaticamente a partir de `$PLATFORM` -- nao ha um valor
+"generico" que cubra mais de um sistema operacional.
+
+### Kill switch de emergencia
+
+Se o `ai-jail` travar, ficar mal configurado, ou bloquear uso legitimo em
+producao, existe uma saida imediata que nao exige editar policy nem rodar
+`apply` de novo:
+
+```sh
+export SCP_AI_JAIL_BYPASS=1
+```
+
+Com essa variavel setada, `run_ai_tool` roda o binario real diretamente, sem
+tentar jail, **em qualquer modo (soft ou hard)**. O uso e sempre registrado
+como evento `WARN` em `events.jsonl` (`ai jail bypass forced`), para manter
+trilha de auditoria de quando e por quem o jail foi contornado.
+
+Para o dia a dia (rodar so aquele comando sem jail, sem precisar lembrar da
+variavel), todo `apply` (user ou machine) gera automaticamente uma funcao de
+shell `<tool>-nojail` para cada entrada de `AI_COMMANDS` -- por exemplo,
+`claude-nojail`. Ela seta o bypass so para aquela chamada, nao para o shell
+inteiro, e continua passando pelo shim (logo, continua aparecendo no log):
+
+```sh
+claude-nojail --version
+```
+
+- **Para uma sessao/usuario especifico**: exporte a variavel no shell antes de
+  rodar o comando de IA, ou adicione a uma dotfile pessoal.
+- **Para a maquina inteira** (incidente que afeta todos os usuarios): adicione
+  `export SCP_AI_JAIL_BYPASS=1` a `/etc/environment` ou ao inicio do
+  `profile.sh` gerado em `<STATE_ROOT>/runtime/profile.sh`, e reverta assim
+  que o `ai-jail` for corrigido -- essa variavel deixa os comandos de IA sem
+  sandbox, entao trate-a como medida temporaria de incidente, nao como
+  configuracao permanente.
+
+## 20. Matriz de Cobertura
 
 | Camada | Cobre bem | Nao cobre sozinha |
 | --- | --- | --- |

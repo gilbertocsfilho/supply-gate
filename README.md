@@ -31,6 +31,7 @@ Supported commands today:
 - `claude`
 - `gemini`
 - `codex`
+- `agy` (Antigravity Code)
 
 ## Operating Modes
 
@@ -89,6 +90,13 @@ Uninstall:
 ./install.sh uninstall
 ```
 
+## Distributing to a Fleet
+
+For rolling out to many machines (KACE or similar), build a versioned
+native package instead of pushing a repo checkout: see
+[build/README.md](build/README.md) for `.deb` (Linux) and `.pkg`/`.dmg`
+(macOS) build scripts.
+
 ## Local Policy Overrides
 
 Keep shared defaults in [policy/default-policy.conf](policy/default-policy.conf).
@@ -101,7 +109,7 @@ cp policy/local-policy.example.conf policy/local-policy.conf
 
 Typical local overrides include:
 
-- `AI_JAIL_LAUNCHER_MACLINUX`
+- `AI_JAIL_LAUNCHER_LINUX` / `AI_JAIL_LAUNCHER_MACOS` (set only the one matching this machine's OS)
 - internal registry URLs for `hard` mode
 - machine-specific install or config roots
 

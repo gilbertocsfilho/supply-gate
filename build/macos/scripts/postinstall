@@ -1,0 +1,15 @@
+#!/bin/sh
+# macOS installer package postinstall hook. Runs as root (the installer/MDM
+# always elevates for pkg installs), right after this payload is placed at
+# /usr/local/share/supply-gate -- applies immediately, no manual follow-up.
+set -e
+
+PAYLOAD_DIR="/usr/local/share/supply-gate"
+mode="${SUPPLY_GATE_MODE:-soft}"
+
+if [ -x "$PAYLOAD_DIR/install.sh" ]; then
+  "$PAYLOAD_DIR/install.sh" apply --mode "$mode" --scope machine || \
+    echo "supply-gate: apply failed; run '$PAYLOAD_DIR/install.sh apply --scope machine' manually to see why" >&2
+fi
+
+exit 0

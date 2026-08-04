@@ -17,7 +17,9 @@ policy.conf
 .ai-jail
 .tool-versions
 
-# Dependency and build artifacts
+# Dependency and build artifacts. build/ itself IS tracked (packaging
+# scripts for .deb/.pkg/.dmg) -- only the generated packages are ignored.
 node_modules/
 dist/
-build/
+build/dist/
+build/*/dist/

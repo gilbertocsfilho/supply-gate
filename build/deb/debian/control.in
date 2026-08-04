@@ -1,0 +1,13 @@
+Package: supply-gate
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: Supply Gate Maintainers <supply-gate@tempest.com.br>
+Depends: coreutils, findutils, gawk | mawk, sed, grep
+Description: Shim-based supply-chain policy enforcement and AI Jail routing
+ Intercepts npm, pnpm, yarn, bun, pip, pip3, uv, poetry, cargo, go and AI
+ coding CLIs (claude, gemini, codex, agy) via PATH-precedence shims,
+ enforcing dependency cooldown/registry policy (soft or hard mode) and
+ routing AI tool invocations through an ai-jail sandbox when one is
+ configured. See /usr/share/supply-gate/GUIDE.md after install.

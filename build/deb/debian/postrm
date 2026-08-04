@@ -1,0 +1,14 @@
+#!/bin/sh
+# Best-effort safety net: prerm already ran install.sh uninstall (which
+# removes /opt/supply-gate) while the payload still existed. If prerm failed
+# partway (e.g. was killed), purge still removes any leftover state root so
+# a reinstall doesn't inherit stale runtime files.
+set -e
+
+case "$1" in
+  purge)
+    rm -rf /opt/supply-gate
+    ;;
+esac
+
+exit 0
