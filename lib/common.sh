@@ -535,7 +535,16 @@ apply_system_profiles() {
   printf '. "%s"\n' "$PROFILE_SNIPPET" >"$profile_d_file"
   chmod 644 "$profile_d_file"
   block=". \"$PROFILE_SNIPPET\""
-  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc; do
+  # Both names for the system-wide bash rc are listed on purpose: Debian/Ubuntu
+  # use /etc/bash.bashrc, while RHEL/Fedora/CentOS and macOS use /etc/bashrc.
+  # Only /etc/bash.bashrc was here before, so on a RHEL-family or macOS box
+  # non-login interactive bash got no system-wide PATH prepend at all -- it was
+  # covered only by the per-user ~/.bashrc block, which leaves any account the
+  # per-user loop skipped (no home dir, UID outside the range, or created after
+  # the last apply) with no interception in that shell. Same for both zsh
+  # layouts: /etc/zshrc (macOS/Fedora, sysconfdir=/etc) vs /etc/zsh/zshrc
+  # (Debian, sysconfdir=/etc/zsh). [ -f ] skips whichever the host lacks.
+  for sys_rc in /etc/bash.bashrc /etc/bashrc /etc/zshrc /etc/zsh/zshrc; do
     [ -f "$sys_rc" ] && append_managed_block "$sys_rc" "$block"
   done
   # zsh sources the *rc files above BEFORE the user's ~/.zshrc, so the PATH
@@ -563,7 +572,9 @@ apply_system_profiles() {
 # Remove /etc/profile.d/supply-gate.sh and managed blocks from system rc files.
 remove_system_profiles() {
   rm -f /etc/profile.d/supply-gate.sh
-  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc /etc/zlogin /etc/zsh/zlogin; do
+  # Must mirror apply_system_profiles exactly, including /etc/bashrc -- a name
+  # missing here would leave a managed block behind forever on RHEL/macOS.
+  for sys_rc in /etc/bash.bashrc /etc/bashrc /etc/zshrc /etc/zsh/zshrc /etc/zlogin /etc/zsh/zlogin; do
     [ -f "$sys_rc" ] && remove_managed_block "$sys_rc"
   done
   # See the matching comment in apply_system_profiles: without this, the
@@ -611,7 +622,7 @@ status_system() {
   else
     printf '  /etc/profile.d/supply-gate.sh: absent\n'
   fi
-  for sys_rc in /etc/bash.bashrc /etc/zshrc /etc/zsh/zshrc; do
+  for sys_rc in /etc/bash.bashrc /etc/bashrc /etc/zshrc /etc/zsh/zshrc; do
     [ -f "$sys_rc" ] || continue
     if grep -qF "$MARKER_BEGIN" "$sys_rc"; then
       printf '  %s: managed block present\n' "$sys_rc"

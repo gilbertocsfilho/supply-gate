@@ -6,6 +6,8 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/common.sh"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/checks.sh"
 
 SUBCOMMAND=${1:-}
 shift || true
@@ -18,10 +20,14 @@ usage() {
 Usage:
   ./install.sh apply [--mode soft|hard] [--scope user|machine]
   ./install.sh audit [--scope user|machine]
-  ./install.sh repair
-  ./install.sh status
+  ./install.sh repair [--scope user|machine]
+  ./install.sh status [--scope user|machine] [--full]
   ./install.sh install-optional-tools [--scfw] [--bumblebee] [--all]
   ./install.sh uninstall [--scope user|machine|all]
+
+  status          read-only integrity report. Exit 0 = healthy, 1 = degraded
+                  (run 'repair'), 2 = manual action required. --full lists
+                  every individual check instead of a per-section summary.
 
   --scope user    (default) apply only to the current user
   --scope machine apply to all local users and system-wide profile layer
@@ -765,9 +771,28 @@ audit_cmd() {
 }
 
 repair_cmd() {
+  parse_scope_flag "$@"
+  # Scope resolution mirrors uninstall_cmd. Before this, repair_cmd took no
+  # arguments at all (the dispatch called it bare, dropping "$@"), so
+  # `repair --scope machine` silently did a USER-scope apply: it reported
+  # "scope: user", exited 0, left the real machine install at /opt/supply-gate
+  # untouched, and created a second user-scope install under root's home. An
+  # exit 0 that repairs nothing is worse than a failure, so resolve the scope
+  # from the flag first and otherwise infer it from what is actually installed.
+  if [ -z "$SCOPE" ] && [ "$(id -u)" = "0" ] && [ -f /etc/profile.d/supply-gate.sh ]; then
+    SCOPE=machine
+    echo "No --scope given, running as root, and a machine-scope install was detected; repairing machine scope" >&2
+  fi
+  # setup_system_paths must run BEFORE load_runtime_state: the saved mode lives
+  # in <STATE_ROOT>/runtime/state.conf, and without the override STATE_ROOT
+  # still points at the invoking user's home, so the machine install's recorded
+  # mode is never read and repair silently downgrades hard to the default.
+  if [ "${SCOPE:-user}" = "machine" ]; then
+    setup_system_paths
+  fi
   load_runtime_state
   ENFORCEMENT_MODE=${ENFORCEMENT_MODE:-${DEFAULT_MODE:-soft}}
-  apply_cmd --mode "$ENFORCEMENT_MODE"
+  apply_cmd --mode "$ENFORCEMENT_MODE" --scope "${SCOPE:-user}"
 }
 
 uninstall_cmd() {
@@ -836,32 +861,13 @@ uninstall_machine_cmd() {
   log_json_event "INFO" "uninstall.completed" "install.sh" "uninstall-machine" "success" "machine scope"
 }
 
+# Integrity checks live in lib/checks.sh (status_run). Exit codes changed with
+# this: 0 used to mean "at least one location is configured" and 1 "nothing
+# configured". Now 0 healthy, 1 degraded (repair fixes it), 2 manual action
+# required or not installed -- a caller that treated 1 as "not installed" must
+# look for 2.
 status_cmd() {
-  configured=0
-  status_system
-  # The system-wide profile layer covers every user's PATH; when present, users
-  # without per-user package configs are still covered rather than unconfigured.
-  system_active=""
-  [ -f /etc/profile.d/supply-gate.sh ] && system_active=1
-  printf '\nUsers:\n'
-  # Root
-  root_count=0
-  for f in /root/.profile /root/.bashrc /root/.zshrc /root/.npmrc /root/.bunfig.toml \
-            /root/.config/pip/pip.conf /root/.cargo/config.toml; do
-    [ -f "$f" ] && grep -qF "$MARKER_BEGIN" "$f" && root_count=$((root_count + 1))
-  done
-  if [ "$root_count" -gt 0 ]; then
-    configured=$((configured + 1))
-  fi
-  status_user "root" "/root" "/root/.config" "$system_active"
-  # Local users
-  list_local_users | while IFS=: read -r username user_home; do
-    status_user "$username" "$user_home" "$user_home/.config" "$system_active"
-  done
-  if [ "$configured" -gt 0 ] || [ -n "$system_active" ]; then
-    return 0
-  fi
-  return 1
+  status_run "$@"
 }
 
 # Guard: skip dispatch when sourced by tests (_SCP_SOURCED=1).
@@ -870,8 +876,10 @@ status_cmd() {
 case "$SUBCOMMAND" in
   apply) apply_cmd "$@" ;;
   audit) audit_cmd "$@" ;;
-  repair) repair_cmd ;;
-  status) status_cmd ;;
+  # "$@" is required: without it `repair --scope machine` silently ran a
+  # user-scope apply. See repair_cmd.
+  repair) repair_cmd "$@" ;;
+  status) status_cmd "$@" ;;
   install-optional-tools) install_optional_tools_cmd "$@" ;;
   uninstall) uninstall_cmd "$@" ;;
   ""|-h|--help|help) usage ;;

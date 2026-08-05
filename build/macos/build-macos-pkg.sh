@@ -40,7 +40,7 @@ mkdir -p "$PAYLOAD_ROOT$INSTALL_LOCATION"
 
 # Same production-only payload as build/deb/build-deb.sh -- see that script's
 # comment for what's deliberately left out (tests/, docker/, local-policy.conf).
-PAYLOAD_ITEMS="install.sh lib shims scripts policy README.md GUIDE.md VERSION"
+PAYLOAD_ITEMS="install.sh uninstall.sh lib shims scripts policy README.md GUIDE.md VERSION"
 for item in $PAYLOAD_ITEMS; do
   cp -a "$REPO_ROOT/$item" "$PAYLOAD_ROOT$INSTALL_LOCATION/$item"
 done

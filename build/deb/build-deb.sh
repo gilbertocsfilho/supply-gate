@@ -30,7 +30,7 @@ mkdir -p "$PKGROOT/DEBIAN" "$PKGROOT/usr/share/supply-gate"
 # compose.yaml, .env.example (dev/reference material, not needed on a
 # managed endpoint). policy/local-policy.conf never ships: it's
 # machine-specific and gitignored, never present in a checkout to copy.
-PAYLOAD_ITEMS="install.sh lib shims scripts policy README.md GUIDE.md VERSION"
+PAYLOAD_ITEMS="install.sh uninstall.sh lib shims scripts policy README.md GUIDE.md VERSION"
 for item in $PAYLOAD_ITEMS; do
   cp -a "$REPO_ROOT/$item" "$PKGROOT/usr/share/supply-gate/$item"
 done

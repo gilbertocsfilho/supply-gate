@@ -72,6 +72,12 @@ Apply:
 ./install.sh apply --mode soft
 ```
 
+Check integrity:
+
+```sh
+./install.sh status
+```
+
 Audit:
 
 ```sh
@@ -87,8 +93,58 @@ Repair:
 Uninstall:
 
 ```sh
-./install.sh uninstall
+./uninstall.sh
 ```
+
+## Checking Integrity
+
+`status` is a read-only report: it never changes configuration. Run it whenever you
+want to know whether this machine is still enforcing policy.
+
+```sh
+./install.sh status            # one line per section
+./install.sh status --full     # every individual check
+```
+
+Exit codes tell you what to do next:
+
+| Exit | Meaning | Next step |
+|---|---|---|
+| `0` | healthy | nothing |
+| `1` | degraded | `./install.sh repair` (the report lists what it will fix) |
+| `2` | manual action required, or not installed | the report names each item |
+
+The split matters: `repair` re-runs `apply`, so it fixes drifted files, missing
+blocks and stale shims. It cannot fix a placeholder registry URL in `hard` mode, a
+missing AI jail launcher, or a `PATH` that a later edit in your own shell rc
+shadows — those are reported as manual, with the specific action.
+
+`status` checks things `audit` does not, notably:
+
+- whether the installed runtime still **matches** what shipped (`audit` only checks
+  that the files exist, so an edited `common.sh` passes it)
+- whether the shim directory actually wins in `PATH`, resolved by file content
+- whether the log directory is writable — when it is not, logging silently falls
+  back to `/dev/null` and the machine produces no audit evidence at all
+
+Scope is inferred: with no `--scope`, a user-scope install is preferred, falling back
+to the machine-wide layer. Pass `--scope machine` to be explicit.
+
+## Tests
+
+```sh
+sh tests/run.sh            # unit tests, temp dirs only, safe on any machine
+sh tests/docker/run.sh     # end-to-end in throwaway containers (needs docker)
+```
+
+The container lanes install for real as root, across `ubuntu:24.04`, `debian:12`, and
+a `macos-layout` lane that forces the `sysconfdir=/etc` file layout macOS uses. They
+assert `PATH` interception from real login and interactive shells, in both `bash` and
+`zsh`. The repo is mounted read-only, and `tests/docker/scenario.sh` refuses to run
+outside a container.
+
+Containers cannot run macOS — a Linux kernel cannot execute Darwin binaries — so
+before a macOS rollout, run the scenario manually on a real Mac.
 
 ## Distributing to a Fleet
 
