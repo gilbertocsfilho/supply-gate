@@ -1,13 +1,17 @@
-# Build: pacotes nativos (.deb / .pkg + .dmg)
+# Build: pacotes nativos (.deb / .pkg+.dmg / .exe)
 
 Empacota o supply-gate como instalador nativo por SO, em vez de distribuir o
 checkout do repo direto. Isso dá versionamento real (o pacote carrega uma
-versão, `dpkg`/`installer` sabem o que está instalado) e permite que o
-KACE (ou qualquer ferramenta de deploy) rode só `dpkg -i` / `installer -pkg`
-sem precisar clonar o repo em cada máquina.
+versão, `dpkg`/`installer`/Add-Remove-Programs sabem o que está instalado) e
+permite que o KACE (ou qualquer ferramenta de deploy) rode só `dpkg -i` /
+`installer -pkg` / `setup.exe /S` sem precisar clonar o repo em cada máquina.
 
-Windows não tem pacote aqui ainda -- ver `docs/` ou a conversa de instalação
-Windows para o estado disso.
+Windows usa um instalador `.exe` (NSIS, não MSI -- ver `build/windows/`
+abaixo), construído sobre o mesmo instalador nativo `install.ps1`/
+`uninstall.ps1` na raiz (mesmo contrato `-Scope`/`-Mode` do `install.sh`) --
+ver [`docs/windows-support.md`](../docs/windows-support.md) para a
+arquitetura, o mapeamento de paths POSIX↔Windows, e por que MSI/WiX foi
+tentado e abandonado em favor do NSIS.
 
 ## Versionamento
 
@@ -28,17 +32,24 @@ Para lançar uma versão nova:
 echo "0.2.0" > VERSION
 git commit -am "release: 0.2.0"
 git tag v0.2.0
-./build/deb/build-deb.sh          # gera build/deb/dist/supply-gate_0.2.0_all.deb
-./build/macos/build-macos-pkg.sh  # (rodar num Mac) gera build/macos/dist/supply-gate-0.2.0.{pkg,dmg}
+./build/deb/build-deb.sh            # gera build/deb/dist/supply-gate_0.2.0_all.deb
+./build/macos/build-macos-pkg.sh    # (rodar num Mac) gera build/macos/dist/supply-gate-0.2.0.{pkg,dmg}
+./build/windows/build-installer.sh  # gera build/windows/dist/SupplyGate-0.2.0-setup.exe
 ```
 
 ## O que vai dentro do pacote
 
-Ambos os build scripts empacotam a mesma lista de itens (payload de
-produção, não o repo inteiro):
+Os três build scripts empacotam a mesma lista de itens por SO (payload de
+produção, não o repo inteiro). Linux/macOS:
 
 ```
 install.sh  lib/  shims/  scripts/  policy/  README.md  GUIDE.md  VERSION
+```
+
+Windows (equivalentes nativos, ver `docs/windows-support.md`):
+
+```
+install.ps1  uninstall.ps1  lib/windows/  shims/windows/  policy/  README.md  GUIDE.md  VERSION
 ```
 
 Ficam de fora, de propósito: `tests/`, `docker/`, `fleet/`, `compose.yaml`,
@@ -118,13 +129,52 @@ necessário assinar com um "Developer ID Installer" certificate
 fora do escopo deste script; ver a documentação da Apple sobre notarização
 antes do primeiro rollout real.
 
+## Windows: `.exe` (NSIS)
+
+Roda em qualquer máquina com [NSIS](https://nsis.sourceforge.io/) instalado
+(`sudo apt-get install nsis` no Linux -- o compilador `makensis` roda igual
+em Linux ou Windows, não precisa de host Windows pra buildar):
+
+```sh
+./build/windows/build-installer.sh
+```
+
+Gera `build/windows/dist/SupplyGate-<VERSION>-setup.exe`. Instalando roda
+`install.ps1 apply --scope machine` sozinho assim que o payload é copiado:
+
+```powershell
+# elevado (admin)
+.\SupplyGate-0.1.1-setup.exe /S              # silencioso, modo soft (padrão)
+.\SupplyGate-0.1.1-setup.exe /S /MODE=hard   # silencioso, modo hard
+```
+
+Sem `/S` abre o instalador padrão do Windows (sem telas de wizard --
+só a barra de progresso), útil pra rodar manualmente clicando duas vezes.
+Registra entrada normal em Adicionar/Remover Programas; desinstalar (pelo
+Painel de Controle ou silenciosamente) roda `install.ps1 uninstall --scope
+machine` antes de remover os arquivos, igual ao `prerm` do `.deb`:
+
+```powershell
+"C:\Program Files\Supply Gate\Uninstall-SupplyGate.exe" /S
+```
+
+**Por que `.exe`/NSIS e não `.msi`/WiX**: um protótipo em WiX chegou a
+compilar e instalar corretamente, mas só roda de forma confiável a partir de
+um host Windows de verdade (o CLI do WiX tem bugs reais rodando via Linux,
+mesmo num `.wxs` mínimo) -- ver `docs/windows-support.md` pros detalhes,
+incluindo um bug real de bitness (PowerShell 32 vs 64-bit) encontrado
+testando o instalador de verdade numa máquina Windows, que afetaria
+qualquer um dos dois formatos.
+
 ## Config local (AI Jail, registries de hard mode)
 
 O pacote base só carrega `policy/default-policy.conf` -- os placeholders. Pra
 uma máquina real (ex.: com AI Jail configurado, ou em modo hard com registry
 interno), entregue um `local-policy.conf` separadamente, escrito em
-`/usr/share/supply-gate/policy/local-policy.conf` (Linux) ou
-`/usr/local/share/supply-gate/policy/local-policy.conf` (macOS) **antes**
+`/usr/share/supply-gate/policy/local-policy.conf` (Linux),
+`/usr/local/share/supply-gate/policy/local-policy.conf` (macOS) ou
+`C:\Program Files\Supply Gate\policy\local-policy.conf` (Windows) **antes**
 de instalar o pacote (ou antes de rodar `apply` de novo) -- veja
 `policy/local-policy.example.conf` pro formato. No KACE, isso pode ser um
-segundo item simples: "copiar arquivo" antes de rodar o `dpkg -i`/`installer`.
+segundo item simples: "copiar arquivo" antes de rodar o `dpkg -i`/`installer`/
+`setup.exe`.
