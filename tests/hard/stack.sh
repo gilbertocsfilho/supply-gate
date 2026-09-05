@@ -77,7 +77,14 @@ remove_hosts() {
 # Ready = nginx routed us to the right upstream and the upstream answered at
 # all. A 4xx from a live registry is still proof of routing; 502/504 is not.
 probe() {
-  curl -s -o /dev/null -m 10 -w '%{http_code}' "http://$1$2" 2>/dev/null || echo 000
+  # curl writes %{http_code} ("000" on a connection failure) and THEN exits
+  # non-zero, so a `|| echo 000` fallback appends a second one and the report
+  # reads "000000". Normalise instead.
+  _p_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://$1$2" 2>/dev/null || true)
+  case "$_p_code" in
+    ''|*[!0-9]*) _p_code=000 ;;
+  esac
+  printf '%s' "$_p_code"
 }
 
 wait_ready() {
@@ -104,8 +111,10 @@ wait_ready() {
     # its whole config when any one upstream name does not resolve -- so one
     # bad service takes all four vhosts down. Say so after a minute instead of
     # burning the full timeout on a stack that cannot recover.
-    if [ "$i" -gt 20 ] && \
-       compose ps --format '{{.Name}} {{.State}}' 2>/dev/null | grep -qi 'restarting'; then
+    # Plain `compose ps`, not --format: compose v2 only accepts table|json
+    # there, so a Go template silently errors out and this never fires. The
+    # STATUS column carries "Restarting" either way.
+    if [ "$i" -gt 20 ] && compose ps 2>/dev/null | grep -qi 'restarting'; then
       printf 'a container is not staying up:\n' >&2
       compose ps >&2
       compose logs --tail 40 >&2

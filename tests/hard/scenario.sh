@@ -51,7 +51,40 @@ rc_of() {
   printf '%s' "$?"
 }
 
+# Same, but bounded. A package manager talking to a proxy that accepts the
+# connection and then stalls will wait far longer than any CI job allows (npm
+# alone retries a 5-minute fetch timeout twice), and a lane that hangs teaches
+# nothing -- it just burns the job timeout and produces no log. `timeout`
+# reports 124, which the callers surface as a stall rather than a plain
+# failure.
+rc_of_timed() {
+  _rt_secs=$1
+  shift
+  timeout "$_rt_secs" "$@" >/tmp/last.log 2>&1
+  printf '%s' "$?"
+}
+
+report_op() {
+  case "$2" in
+    0)   ok "$1" ;;
+    124) no "$1 -- TIMED OUT, the proxy accepted the connection and stalled"
+         tail -20 /tmp/last.log | sed 's/^/    /' ;;
+    *)   no "$1 (exit $2)"
+         tail -20 /tmp/last.log | sed 's/^/    /' ;;
+  esac
+}
+
 nginx_log() { sh "$SCRIPT_DIR/stack.sh" log "$1" 2>/dev/null; }
+
+# curl writes the code and THEN exits non-zero on a connection failure, so an
+# `|| echo 000` fallback would append a second one ("000000").
+http_code() {
+  _hc=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$1" 2>/dev/null || true)
+  case "$_hc" in
+    ''|*[!0-9]*) _hc=000 ;;
+  esac
+  printf '%s' "$_hc"
+}
 
 # A request that nginx routed to this vhost AND the upstream answered for.
 # The log format ends with us="<upstream status>", so a 502 with no upstream
@@ -96,7 +129,7 @@ for pair in "npm-proxy.corp.example:/-/ping" \
             "cargo-proxy.corp.example:/"; do
   host=${pair%%:*}
   path=${pair#*:}
-  code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "http://$host$path" 2>/dev/null || echo 000)
+  code=$(http_code "http://$host$path")
   case "$code" in
     2*|3*|4*) ok "$host$path -> HTTP $code" ;;
     *)        no "$host$path -> HTTP $code (stack not reachable)" ;;
@@ -211,13 +244,12 @@ step "6. real installs actually travel through the proxies"
 # --- npm -------------------------------------------------------------------
 if command -v npm >/dev/null 2>&1; then
   mkdir -p "$WORK/node" && (cd "$WORK/node" && printf '{"name":"t","version":"1.0.0"}\n' >package.json)
-  code=$(cd "$WORK/node" && rc_of /opt/supply-gate/shims/npm install lodash --no-audit --no-fund)
-  if [ "$code" = "0" ] && [ -d "$WORK/node/node_modules/lodash" ]; then
-    ok "npm install lodash succeeded through the shim"
-  else
-    no "npm install lodash failed (exit $code)"
-    tail -20 /tmp/last.log | sed 's/^/    /'
+  code=$(cd "$WORK/node" && rc_of_timed 180 /opt/supply-gate/shims/npm install lodash \
+    --no-audit --no-fund --fetch-timeout=30000 --fetch-retries=1)
+  if [ "$code" = "0" ] && [ ! -d "$WORK/node/node_modules/lodash" ]; then
+    code=1
   fi
+  report_op "npm install lodash succeeded through the shim" "$code"
   proxy_served npm-proxy '"GET /lodash' \
     && ok "verdaccio served the lodash metadata (nginx npm vhost)" \
     || no "no lodash metadata request in the npm vhost access log"
@@ -242,14 +274,9 @@ if [ -n "$pip_tool" ]; then
   # docker/README.md), and pip ignores a plain-HTTP index unless told to trust
   # it. A real rollout puts TLS on the internal proxy and needs none of this,
   # which is why install.sh does not emit a trusted-host line.
-  code=$(rc_of "/opt/supply-gate/shims/$pip_tool" download six --no-deps \
-    --trusted-host pypi-proxy.corp.example --dest "$WORK/pip")
-  if [ "$code" = "0" ]; then
-    ok "$pip_tool download six succeeded through the shim"
-  else
-    no "$pip_tool download six failed (exit $code)"
-    tail -20 /tmp/last.log | sed 's/^/    /'
-  fi
+  code=$(rc_of_timed 180 "/opt/supply-gate/shims/$pip_tool" download six --no-deps \
+    --timeout 20 --retries 1 --trusted-host pypi-proxy.corp.example --dest "$WORK/pip")
+  report_op "$pip_tool download six succeeded through the shim" "$code"
   proxy_served pypi-proxy '/root/pypi/\+simple/six' \
     && ok "devpi served the six index (nginx pypi vhost)" \
     || no "no six index request in the pypi vhost access log"
@@ -267,14 +294,9 @@ go 1.21
 
 require github.com/pkg/errors v0.9.1
 GOEOF
-  code=$(cd "$WORK/go" && rc_of env GOFLAGS=-mod=mod GOPATH="$WORK/gopath" \
+  code=$(cd "$WORK/go" && rc_of_timed 240 env GOFLAGS=-mod=mod GOPATH="$WORK/gopath" \
     /opt/supply-gate/shims/go mod download github.com/pkg/errors)
-  if [ "$code" = "0" ]; then
-    ok "go mod download succeeded through the shim"
-  else
-    no "go mod download failed (exit $code)"
-    tail -20 /tmp/last.log | sed 's/^/    /'
-  fi
+  report_op "go mod download succeeded through the shim" "$code"
   proxy_served go-proxy '/github.com/pkg/errors/@v/' \
     && ok "athens served the module (nginx go vhost)" \
     || no "no module request in the go vhost access log"
@@ -288,16 +310,23 @@ fi
 # by falling back to crates.io would defeat the point of the test. What is
 # asserted instead: the source replacement is on disk (step 3) and the sparse
 # index endpoint really answers through nginx.
-code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' \
-  "http://cargo-proxy.corp.example/api/v1/crates/" 2>/dev/null || echo 000)
+code=$(http_code "http://cargo-proxy.corp.example/api/v1/crates/")
 case "$code" in
   2*|3*|4*) ok "kellnr sparse index endpoint answers through nginx (HTTP $code)" ;;
   *)        no "kellnr sparse index endpoint returned HTTP $code" ;;
 esac
 if command -v cargo >/dev/null 2>&1; then
   out=$(/opt/supply-gate/shims/cargo --version 2>&1)
-  printf '%s' "$out" | grep -q '^cargo ' \
-    && ok "cargo still runs through the shim" || no "cargo shim broke: $out"
+  # Assert INTERCEPTION, not that the host's cargo happens to be runnable
+  # here. On a GitHub runner cargo is a rustup shim belonging to the
+  # unprivileged user, so invoking it as root (different HOME, no RUSTUP_HOME)
+  # makes rustup itself refuse -- "could not choose a version of cargo to run"
+  # -- which says nothing about Supply Gate. What has to hold is that the shim
+  # caught the call and resolved past itself to the real binary.
+  printf '%s' "$out" | grep -q 'Intercepted command: cargo --version' \
+    && ok "cargo intercepted by the shim" || no "cargo not intercepted: $out"
+  printf '%s' "$out" | grep -q 'Delegating to real binary' \
+    && ok "cargo delegated to the real binary" || no "cargo not delegated: $out"
 else
   skip "cargo not installed on this host"
 fi

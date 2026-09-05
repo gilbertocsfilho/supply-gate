@@ -37,7 +37,15 @@ if ! sh "$SCRIPT_DIR/stack.sh" up; then
   exit 1
 fi
 
-SCP_TEST_ALLOW_DESTRUCTIVE=1 sh "$SCRIPT_DIR/scenario.sh" || rc=1
+# Outer bound as well as the per-operation ones inside: whatever stalls, the
+# lane must still reach the routing evidence below and the teardown after it.
+SCP_TEST_ALLOW_DESTRUCTIVE=1 timeout 900 sh "$SCRIPT_DIR/scenario.sh" || rc=$?
+if [ "$rc" = "124" ]; then
+  printf '\nSCENARIO TIMED OUT after 900s\n' >&2
+  rc=1
+elif [ "$rc" != "0" ]; then
+  rc=1
+fi
 
 printf '\n############ nginx routing evidence ############\n'
 sh "$SCRIPT_DIR/stack.sh" logs || true
