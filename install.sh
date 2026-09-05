@@ -842,9 +842,18 @@ uninstall_machine_cmd() {
   log_info "Removing machine-scope managed blocks and system state"
   log_json_event "INFO" "uninstall.started" "install.sh" "uninstall-machine" "started" "machine scope"
   remove_system_profiles
-  # Remove from root
-  remove_user_configs_for_home "/root" "/root/.config" || \
-    log_warn "Failed to fully remove config for root"
+  # Remove from root. Must resolve root's home the same way apply_machine_cmd
+  # does -- macOS puts it at /var/root and has no /root at all, so hardcoding
+  # /root here left root's managed blocks behind on every Mac while reporting
+  # a clean uninstall.
+  case "$PLATFORM" in
+    macos) root_home="/var/root" ;;
+    *)     root_home="/root" ;;
+  esac
+  if [ -d "$root_home" ]; then
+    remove_user_configs_for_home "$root_home" "$root_home/.config" || \
+      log_warn "Failed to fully remove config for root"
+  fi
   # Remove from all local users. Each user's removal is guarded with
   # || log_warn: without it, a single failure (e.g. one unwritable file)
   # aborts the whole loop under set -e and silently skips every remaining

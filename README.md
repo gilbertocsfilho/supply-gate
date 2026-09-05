@@ -132,9 +132,21 @@ to the machine-wide layer. Pass `--scope machine` to be explicit.
 
 ## Tests
 
+Safe on any machine:
+
 ```sh
-sh tests/run.sh            # unit tests, temp dirs only, safe on any machine
+sh tests/run.sh                        # unit tests, temp dirs only
+powershell.exe -File tests/windows/run.ps1   # the same, on Windows
+```
+
+Destructive — they install Supply Gate for real, so they refuse to start unless
+told the host is disposable (a CI runner, a VM):
+
+```sh
 sh tests/docker/run.sh     # end-to-end in throwaway containers (needs docker)
+sh tests/hard/run.sh       # hard mode against the real proxy stack (needs docker + root)
+sudo env HOME=/var/root SCP_TEST_ALLOW_DESTRUCTIVE=1 sh tests/macos/scenario.sh
+powershell.exe -File tests/windows/e2e.ps1   # set SCP_TEST_ALLOW_DESTRUCTIVE=1
 ```
 
 The container lanes install for real as root, across `ubuntu:24.04`, `debian:12`, and
@@ -144,7 +156,34 @@ assert `PATH` interception from real login and interactive shells, in both `bash
 outside a container.
 
 Containers cannot run macOS — a Linux kernel cannot execute Darwin binaries — so
-before a macOS rollout, run the scenario manually on a real Mac.
+`tests/macos/scenario.sh` runs the same shape of scenario on a real Mac instead, and
+covers what the `macos-layout` lane structurally cannot: `dscl` user enumeration
+(macOS keeps login accounts out of `/etc/passwd`), `/var/root` instead of `/root`,
+BSD userland, and a `zsh` that really reads `/etc/zlogin`.
+
+`tests/hard/run.sh` is the only lane that tests hard mode end to end. Soft mode needs
+no upstream services, so every other lane passes with the registries unreachable —
+hard mode is precisely the mode that cannot. It brings [compose.yaml](compose.yaml)
+up (verdaccio, devpi, athens and kellnr behind nginx), maps the four corporate
+hostnames at `127.0.0.1`, applies `--mode hard`, then makes `npm`, `pip` and `go`
+actually fetch a package and reads the requests back out of nginx's per-vhost access
+log. It also asserts hard mode's fail-closed behaviour: AI CLIs blocked until a jail
+launcher is configured, and the wrapper refusing to run at all once a placeholder
+registry reappears in policy.
+
+### Continuous integration
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs all of it on free
+GitHub-hosted runners — one real machine per platform:
+
+| Job | Runner | What it covers |
+|---|---|---|
+| `unit (ubuntu-latest)` / `unit (macos-latest)` | Linux, macOS | `tests/run.sh` |
+| `unit (windows-latest)` | Windows | `tests/windows/run.ps1`, on Windows PowerShell 5.1 |
+| `e2e linux (throwaway containers)` | Linux | `tests/docker/run.sh` |
+| `e2e macos (runner VM)` | macOS | real root install on Darwin |
+| `e2e windows (runner VM)` | Windows | real user-scope install, real persisted `PATH` |
+| `hard mode (docker proxy stack)` | Linux | hard mode against live proxies |
 
 ## Distributing to a Fleet
 

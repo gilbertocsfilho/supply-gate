@@ -1,0 +1,124 @@
+name: CI
+
+# Everything here runs on free GitHub-hosted runners. Each platform gets a real
+# machine of its own -- ubuntu-latest, macos-latest (a real Mac VM, the one
+# thing tests/docker/run.sh can never provide) and windows-latest -- plus the
+# throwaway-container lanes and the hard-mode lane, which brings the docker
+# proxy stack from compose.yaml up for real.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Unit tests. Temp dirs only, safe anywhere -- the same suite a contributor
+  # runs locally, on all three OSes so a POSIX-ism that only bites on BSD
+  # userland (macOS) or a PowerShell 5.1 quirk shows up here and not on a
+  # workstation.
+  # -------------------------------------------------------------------------
+  unit-posix:
+    name: unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: sh tests/run.sh
+        run: sh tests/run.sh
+
+  unit-windows:
+    name: unit (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Windows PowerShell 5.1 on purpose: it is what every Windows box has,
+      # and it is what docs/windows-support.md validated the port against.
+      - name: powershell tests/windows/run.ps1
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\windows\run.ps1
+          exit $LASTEXITCODE
+
+  # -------------------------------------------------------------------------
+  # End-to-end: a real root install, on a real machine, per OS.
+  # -------------------------------------------------------------------------
+  e2e-linux-containers:
+    name: e2e linux (throwaway containers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: sh tests/docker/run.sh
+        run: sh tests/docker/run.sh
+
+  e2e-macos:
+    name: e2e macos (runner VM)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      # Destructive by design (writes /etc, /opt, /var/root) -- fine on an
+      # ephemeral runner, which is exactly why the scenario refuses to start
+      # without this variable set.
+      # HOME is passed explicitly rather than inherited: a real `sudo
+      # ./install.sh` lands on /var/root, and that is the layout the scenario
+      # asserts on.
+      - name: sudo sh tests/macos/scenario.sh
+        run: |
+          sudo env "PATH=$PATH" HOME=/var/root SCP_TEST_ALLOW_DESTRUCTIVE=1 \
+            sh tests/macos/scenario.sh
+
+  e2e-windows:
+    name: e2e windows (runner VM)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: powershell tests/windows/e2e.ps1
+        shell: powershell
+        env:
+          SCP_TEST_ALLOW_DESTRUCTIVE: '1'
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\windows\e2e.ps1
+          exit $LASTEXITCODE
+
+  # -------------------------------------------------------------------------
+  # Hard mode against the real proxy stack from compose.yaml: verdaccio,
+  # devpi, athens and kellnr behind nginx. Soft mode can be validated with no
+  # upstream services at all; hard mode is precisely the mode that cannot, so
+  # this is the only lane that proves a package manager really resolves
+  # through the corporate proxy instead of the public registry.
+  # -------------------------------------------------------------------------
+  hard-mode-proxies:
+    name: hard mode (docker proxy stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain versions
+        run: |
+          docker --version
+          docker compose version
+          node --version && npm --version
+          python3 --version && python3 -m pip --version
+          go version
+      # Self-elevating: brings the stack up, installs Supply Gate in hard
+      # mode for real, asserts, prints the nginx routing evidence and tears
+      # the stack down again on the way out.
+      - name: sh tests/hard/run.sh
+        run: sh tests/hard/run.sh
+      - name: Compose state on failure
+        if: failure()
+        run: |
+          sudo docker compose -p supply-gate-hard ps || true
+          sudo docker compose -p supply-gate-hard logs --tail 120 || true

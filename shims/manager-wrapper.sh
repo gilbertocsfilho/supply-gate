@@ -196,8 +196,10 @@ run_package_manager() {
   }
 
   if should_run_via_scfw "$@"; then
+    # `return 0` here would have thrown away scfw's verdict: a package it
+    # refused would still look like a successful install to the caller.
     run_via_scfw "$@"
-    return 0
+    return $?
   fi
 
   log_info "Delegating to real binary: $real_bin"
@@ -205,16 +207,24 @@ run_package_manager() {
   "$real_bin" "$@"
 }
 
+# `rc=$?` AFTER a closing `fi` reads the status of the `if` statement itself,
+# which is 0 whenever the condition was false and there is no else branch --
+# not the status of the condition. Written that way, every failing wrapped
+# command (a 404 from the registry, a refused install, a jailed tool that
+# exited non-zero) was logged as "failure" and then handed back to the caller
+# as exit 0, so scripts and CI treated a failed install as a successful one.
+# Capture it in the else branch, where $? is still the condition's status.
 if is_ai_tool "$tool"; then
   if run_ai_tool "$@"; then
     log_info "Command succeeded: $command_text"
     log_json_event "INFO" "command.completed" "$tool" "$command_text" "success" "jailed"
     exit 0
+  else
+    rc=$?
+    log_error "Command failed: $command_text (exit $rc)"
+    log_json_event "ERROR" "command.completed" "$tool" "$command_text" "failure" "jailed exit $rc"
+    exit "$rc"
   fi
-  rc=$?
-  log_error "Command failed: $command_text (exit $rc)"
-  log_json_event "ERROR" "command.completed" "$tool" "$command_text" "failure" "jailed exit $rc"
-  exit $rc
 fi
 
 if is_package_manager "$tool"; then
@@ -222,11 +232,12 @@ if is_package_manager "$tool"; then
     log_info "Command succeeded: $command_text"
     log_json_event "INFO" "command.completed" "$tool" "$command_text" "success" "package manager"
     exit 0
+  else
+    rc=$?
+    log_error "Command failed: $command_text (exit $rc)"
+    log_json_event "ERROR" "command.completed" "$tool" "$command_text" "failure" "package manager exit $rc"
+    exit "$rc"
   fi
-  rc=$?
-  log_error "Command failed: $command_text (exit $rc)"
-  log_json_event "ERROR" "command.completed" "$tool" "$command_text" "failure" "package manager exit $rc"
-  exit $rc
 fi
 
 log_error "Tool not managed by wrapper: $tool"
