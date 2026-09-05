@@ -83,6 +83,17 @@ try {
     Assert-SupplyGateTrue 'example.corp is a placeholder' (Test-SupplyGateHardValuePlaceholder -Value 'https://registry.example.corp/npm/')
     Assert-SupplyGateFalse 'a real URL is not a placeholder' (Test-SupplyGateHardValuePlaceholder -Value 'https://npm.internal.example/')
 
+    # The mode being APPLIED wins over the recorded one. This used to ask
+    # Get-SupplyGateMode, which re-reads state.json and clobbers whatever
+    # Set-SupplyGateMode just set -- so `apply -Mode hard` over an existing soft
+    # install skipped the check entirely and installed hard mode with the
+    # shipped placeholder registries. tests/windows/e2e.ps1 covers that whole
+    # path against a real install; this pins the contract it depends on.
+    Set-SupplyGateMode -Mode 'soft'
+    Assert-SupplyGateFalse 'hard prereqs fail on the shipped placeholders' `
+        (Test-SupplyGateModePrereqs -Mode 'hard')
+    Assert-SupplyGateTrue 'soft mode has no prereqs' (Test-SupplyGateModePrereqs -Mode 'soft')
+
     # =======================================================================
     Write-Output "`n--- real-binary resolution skips our own shim ---"
     # =======================================================================

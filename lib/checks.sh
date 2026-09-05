@@ -479,7 +479,7 @@ check_evidence() {
 
   # Machine scope: unprivileged users' wrappers must be able to log here.
   if [ "$CHECK_SCOPE" = "machine" ] && [ -d "$LOG_ROOT" ]; then
-    _e_mode=$(stat -c '%a' "$LOG_ROOT" 2>/dev/null || stat -f '%Lp' "$LOG_ROOT" 2>/dev/null || echo "")
+    _e_mode=$(path_mode "$LOG_ROOT")
     case "$_e_mode" in
       1777) check_record "evidence.log_perms" "ok" "mode 1777" "none" ;;
       "")   check_record "evidence.log_perms" "unknown" "cannot stat $LOG_ROOT" "none" ;;

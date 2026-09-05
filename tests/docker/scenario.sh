@@ -41,12 +41,30 @@ expect_shim() {
 step "0. preconditions"
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
-  apt-get update -qq >/dev/null 2>&1
+  # Bounded, and its exit status reported. A distro mirror that accepts the
+  # connection and then stalls hangs apt indefinitely; with the output
+  # discarded, that looks exactly like the lane freezing right after this
+  # banner with nothing to explain it. Three minutes is generous for two
+  # index fetches and one small package.
+  timeout 180 apt-get update -qq >/dev/null 2>&1 || \
+    no "apt-get update failed or stalled (exit $?) -- distro mirror problem, not Supply Gate"
   # zsh MUST be installed before apply: apply_system_profiles gates the zlogin
   # write on `command -v zsh`.
-  apt-get install -y -qq zsh >/dev/null 2>&1
+  timeout 180 apt-get install -y -qq zsh >/dev/null 2>&1 || \
+    printf '  WARN  apt-get install zsh failed or stalled (exit %s)\n' "$?"
 fi
-command -v zsh >/dev/null 2>&1 && ok "zsh present before apply" || no "zsh missing"
+# Exit 99, not eight derived failures. Half this scenario is about zsh (login
+# and interactive interception, /etc/zlogin, the wrapper run as alice through
+# `zsh -lc`), so a lane that could not install it never tested what it exists
+# to test -- reporting that as a Supply Gate failure is simply wrong. run.sh
+# turns 99 into SKIP, the same treatment its header already documents for a
+# distro mirror that will not serve metadata.
+if ! command -v zsh >/dev/null 2>&1; then
+  printf '\nSKIPPING LANE: zsh could not be installed from the distro mirror.\n'
+  printf 'Nothing about Supply Gate was tested here.\n'
+  exit 99
+fi
+ok "zsh present before apply"
 
 # /etc/bashrc is the RHEL/macOS name for the system bash rc. Ubuntu has no such
 # file, so create it to prove apply writes both names.

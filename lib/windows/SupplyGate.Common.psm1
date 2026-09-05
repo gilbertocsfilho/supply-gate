@@ -375,8 +375,17 @@ function Assert-SupplyGateHardValue {
     return $true
 }
 
+# $Mode is the mode being APPLIED, which is not necessarily the recorded one.
+# Without it this asked Get-SupplyGateMode, and Get-SupplyGateMode re-reads
+# state.json (via Import-SupplyGateRuntimeState), overwriting whatever
+# Set-SupplyGateMode had just put there -- so `apply -Mode hard` on a box whose
+# state.json still said "soft" returned $true here and installed hard mode with
+# the shipped placeholder registries. install.sh's verify_mode_prereqs reads
+# the flag directly and fails closed; this now matches it.
 function Test-SupplyGateModePrereqs {
-    if ((Get-SupplyGateMode) -ne 'hard') { return $true }
+    param([string]$Mode)
+    if (-not $Mode) { $Mode = Get-SupplyGateMode }
+    if ($Mode -ne 'hard') { return $true }
     $ok = $true
     $ok = (Assert-SupplyGateHardValue -Name 'NPM_REGISTRY_URL' -Value $Script:Policy['NPM_REGISTRY_URL']) -and $ok
     $ok = (Assert-SupplyGateHardValue -Name 'PYTHON_INDEX_URL' -Value $Script:Policy['PYTHON_INDEX_URL']) -and $ok
