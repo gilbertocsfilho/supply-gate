@@ -39,14 +39,26 @@ for entry in $LANES; do
     pre='rm -rf /etc/zsh; : >/etc/zshrc;'
   fi
 
-  if docker run --rm -v "$REPO_ROOT":/src:ro "$image" \
+  # Bounded. Step 0 of the scenario runs apt-get against a distro mirror, and a
+  # mirror that accepts the connection then stalls hangs the lane forever: on a
+  # CI runner that means the whole job is cancelled at its timeout, with a
+  # truncated log that shows only where it stopped and no matrix summary at
+  # all. A stall is reported as a stall instead (timeout exits 124), so the
+  # remaining lanes still run and still report.
+  if timeout --kill-after=30 600 \
+       docker run --rm -v "$REPO_ROOT":/src:ro "$image" \
        sh -c "$pre sh /src/tests/docker/scenario.sh"; then
     results="$results
   PASS  $lane"
   else
     code=$?
-    results="$results
+    if [ "$code" = "124" ]; then
+      results="$results
+  FAIL  $lane (TIMED OUT after 600s -- distro mirror or network stall)"
+    else
+      results="$results
   FAIL  $lane (exit $code)"
+    fi
     rc=1
   fi
 done
