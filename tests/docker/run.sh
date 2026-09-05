@@ -52,7 +52,9 @@ for entry in $LANES; do
   PASS  $lane"
   else
     code=$?
-    if [ "$code" = "124" ]; then
+    # 124 = timeout sent SIGTERM; 137 = it had to escalate to SIGKILL, which
+    # is what `docker run` produces because it does not exit on SIGTERM here.
+    if [ "$code" = "124" ] || [ "$code" = "137" ]; then
       results="$results
   FAIL  $lane (TIMED OUT after 600s -- distro mirror or network stall)"
     else

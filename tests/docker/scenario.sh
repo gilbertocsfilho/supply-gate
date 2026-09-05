@@ -41,10 +41,17 @@ expect_shim() {
 step "0. preconditions"
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
-  apt-get update -qq >/dev/null 2>&1
+  # Bounded, and its exit status reported. A distro mirror that accepts the
+  # connection and then stalls hangs apt indefinitely; with the output
+  # discarded, that looks exactly like the lane freezing right after this
+  # banner with nothing to explain it. Three minutes is generous for two
+  # index fetches and one small package.
+  timeout 180 apt-get update -qq >/dev/null 2>&1 || \
+    no "apt-get update failed or stalled (exit $?) -- distro mirror problem, not Supply Gate"
   # zsh MUST be installed before apply: apply_system_profiles gates the zlogin
   # write on `command -v zsh`.
-  apt-get install -y -qq zsh >/dev/null 2>&1
+  timeout 180 apt-get install -y -qq zsh >/dev/null 2>&1 || \
+    no "apt-get install zsh failed or stalled (exit $?) -- distro mirror problem, not Supply Gate"
 fi
 command -v zsh >/dev/null 2>&1 && ok "zsh present before apply" || no "zsh missing"
 
