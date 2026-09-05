@@ -3,7 +3,12 @@ ProtocolWorkers = 10
 LogLevel = "info"
 DownloadMode = "sync"
 StorageType = "disk"
-GlobalEndpoint = "http://go-proxy.corp.example"
+# GlobalEndpoint is the UPSTREAM Go module proxy athens falls back to when it
+# has no cached copy -- not this stack's own address. It used to name
+# go-proxy.corp.example, which is this very service, so every cache miss
+# looped back on itself and no module could ever be fetched. Point it at a
+# higher internal tier if you have one; otherwise the public proxy.
+GlobalEndpoint = "https://proxy.golang.org"
 
 [DiskStorage]
 Root = "/var/lib/athens"

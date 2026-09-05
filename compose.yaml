@@ -67,10 +67,14 @@ services:
     environment:
       ATHENS_STORAGE_TYPE: disk
       ATHENS_DISK_STORAGE_ROOT: /var/lib/athens
-      ATHENS_GLOBAL_ENDPOINT: ${ATHENS_GLOBAL_ENDPOINT:-http://go-proxy.corp.example}
+      ATHENS_GLOBAL_ENDPOINT: ${ATHENS_GLOBAL_ENDPOINT:-https://proxy.golang.org}
       ATHENS_LOG_LEVEL: info
       ATHENS_DOWNLOAD_MODE: sync
-      ATHENS_SINGLE_FLIGHT_TYPE: in-memory
+      # Accepted values are memory | etcd | redis | redis-sentinel | gcp |
+      # azureblob (or unset). "in-memory" is not one of them, and athens
+      # refuses to build its routes at all on an unknown value ("unrecognized
+      # single flight type"), so the container crash-looped.
+      ATHENS_SINGLE_FLIGHT_TYPE: memory
     volumes:
       # /config/config.toml is where the image's own default command already
       # looks. Mounting it there means no `command:` override is needed at

@@ -41,11 +41,8 @@ PYPI_PROXY_HOSTNAME=pypi-proxy.corp.example
 GO_PROXY_HOSTNAME=go-proxy.corp.example
 CARGO_PROXY_HOSTNAME=cargo-proxy.corp.example
 
-# The shipped docker/athens/config.toml points GlobalEndpoint back at the
-# corporate hostname, which is this very stack -- fine as a placeholder for a
-# real rollout (where it names the tier above), a fetch loop here. The env var
-# wins over the config file, so aim it at the public proxy for the test.
-ATHENS_GLOBAL_ENDPOINT=https://proxy.golang.org
+# ATHENS_GLOBAL_ENDPOINT is deliberately NOT set here: the lane should exercise
+# the endpoint compose.yaml ships with, not one only the test gets right.
 KELLNR_HOSTNAME=cargo-proxy.corp.example
 ENVEOF
 }
