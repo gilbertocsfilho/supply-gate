@@ -225,6 +225,17 @@ function Test-SupplyGateShimPath {
     elseif ($leaked.Count -eq 0) {
         Add-SupplyGateCheckResult -Id 'path.effective' -Severity ok -Detail "$hit/$installed resolve to shims" -Fix none
     }
+    elseif (-not $sessionHasShim) {
+        # Nothing can be concluded about interception from a session whose
+        # $env:Path predates the install -- the persisted PATH is already
+        # reported by path.shim_dir/path.session above. Very common: a
+        # provisioning run (the NSIS installer, CI) checking status in the same
+        # session that just ran apply. warn, not fail; the machine is fine, and
+        # repair could not change this anyway. Mirrors check_path in
+        # lib/checks.sh, which downgrades the identical case.
+        Add-SupplyGateCheckResult -Id 'path.effective' -Severity warn `
+            -Detail 'cannot judge from this session (shim dir not in its PATH)' -Fix none
+    }
     else {
         Add-SupplyGateCheckResult -Id 'path.effective' -Severity fail -Detail "shadowed for: $($leaked -join ' ')" -Fix repair
     }

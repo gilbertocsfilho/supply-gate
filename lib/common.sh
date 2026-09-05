@@ -164,6 +164,34 @@ path_owner() {
   done
 }
 
+# Print a path's permission bits in octal INCLUDING the setuid/setgid/sticky
+# digit, or nothing on failure. Same two-dialect dance as path_owner, and the
+# same reason to validate the output rather than trust exit status.
+#
+# The digit is the whole point: BSD's `%Lp` is documented as the LOW three
+# octal digits only, so on macOS a correctly-created 1777 log directory read
+# back as "777". `status` then reported evidence.log_perms as failed on every
+# healthy machine-scope Mac and pointed at a repair that could not fix it.
+# `%Mp` supplies the special-bits digit GNU's `%a` already includes.
+path_mode() {
+  _pm=$(stat -c '%a' "$1" 2>/dev/null) || _pm=""
+  case "$_pm" in
+    ''|*[!0-7]*) _pm=$(stat -f '%Mp%Lp' "$1" 2>/dev/null) || _pm="" ;;
+  esac
+  case "$_pm" in
+    ''|*[!0-7]*) return 0 ;;
+  esac
+  # GNU prints 755 where BSD prints 0755; drop leading zeros so the two
+  # dialects produce the same string for the same mode.
+  while :; do
+    case "$_pm" in
+      0?*) _pm=${_pm#0} ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$_pm"
+}
+
 log_init() {
   ensure_dirs 2>/dev/null || true
   LOG_CONTEXT=${1:-tool}

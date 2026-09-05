@@ -109,7 +109,7 @@ function Invoke-ApplyUserCmd {
     Write-SupplyGateJsonEvent -Level INFO -Event 'apply.started' -Tool 'install.ps1' -Command 'apply' -Status started -Detail $script:EnforcementModeArg
     New-SupplyGateDirs
     Set-SupplyGateMode -Mode $script:EnforcementModeArg
-    if ($script:EnforcementModeArg -eq 'hard' -and -not (Test-SupplyGateModePrereqs)) {
+    if ($script:EnforcementModeArg -eq 'hard' -and -not (Test-SupplyGateModePrereqs -Mode $script:EnforcementModeArg)) {
         Write-SupplyGateJsonEvent -Level ERROR -Event 'apply.completed' -Tool 'install.ps1' -Command 'apply' -Status failure -Detail 'hard mode prereqs not met'
         exit 1
     }
@@ -134,7 +134,7 @@ function Invoke-ApplyMachineCmd {
     Write-SupplyGateJsonEvent -Level INFO -Event 'apply.started' -Tool 'install.ps1' -Command 'apply-machine' -Status started -Detail $script:EnforcementModeArg
     New-SupplyGateDirs
     Set-SupplyGateMode -Mode $script:EnforcementModeArg
-    if ($script:EnforcementModeArg -eq 'hard' -and -not (Test-SupplyGateModePrereqs)) {
+    if ($script:EnforcementModeArg -eq 'hard' -and -not (Test-SupplyGateModePrereqs -Mode $script:EnforcementModeArg)) {
         Write-SupplyGateJsonEvent -Level ERROR -Event 'apply.completed' -Tool 'install.ps1' -Command 'apply-machine' -Status failure -Detail 'hard mode prereqs not met'
         exit 1
     }
@@ -211,7 +211,7 @@ function Invoke-AuditUserCmd {
     }
 
     if ($mode -eq 'hard') {
-        if (-not (Test-SupplyGateModePrereqs)) { $failures++ }
+        if (-not (Test-SupplyGateModePrereqs -Mode $mode)) { $failures++ }
         $policy = Get-SupplyGatePolicy
         $go = Find-SupplyGateRealBinary -Tool 'go'
         if ($go) {
@@ -287,7 +287,7 @@ function Invoke-AuditMachineCmd {
             Write-SupplyGateWarn "npmrc missing managed block: $($u.Name)"
         }
     }
-    if ($mode -eq 'hard' -and -not (Test-SupplyGateModePrereqs)) { $failures++ }
+    if ($mode -eq 'hard' -and -not (Test-SupplyGateModePrereqs -Mode $mode)) { $failures++ }
 
     if ($failures -gt 0) {
         Save-SupplyGateStatus -Result 'non-compliant'

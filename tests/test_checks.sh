@@ -228,5 +228,40 @@ after=$(find "$STATE_ROOT" -type f -exec sha256sum {} \; 2>/dev/null | sort)
 assert_equals "a full check run changes nothing on disk" "$before" "$after"
 
 # ===========================================================================
+printf '\n--- path_mode (evidence.log_perms depends on it) ---\n'
+# The sticky digit is the whole point. BSD stat's %Lp prints only the low
+# three octal digits, so the old `stat -c '%a' || stat -f '%Lp'` chain read a
+# correct 1777 log directory back as "777" on macOS -- and check_evidence
+# then failed a perfectly healthy machine-scope install, pointing at a repair
+# that could never fix it.
+PM_DIR="$FAKE_ROOT/modes"
+mkdir -p "$PM_DIR/sticky" "$PM_DIR/plain"
+chmod 1777 "$PM_DIR/sticky"
+chmod 755 "$PM_DIR/plain"
+assert_equals "path_mode reports the sticky bit" "1777" "$(path_mode "$PM_DIR/sticky")"
+assert_equals "path_mode reports a plain mode without a leading zero" \
+  "755" "$(path_mode "$PM_DIR/plain")"
+assert_equals "path_mode prints nothing for a missing path" \
+  "" "$(path_mode "$PM_DIR/does-not-exist")"
+
+# And the check that consumes it agrees, in the scope that cares.
+reset_checks
+CHECK_SCOPE="machine"
+LOG_ROOT_SAVED=$LOG_ROOT
+LOG_ROOT="$PM_DIR/sticky"
+AGGREGATE_LOG="$LOG_ROOT/events.jsonl"
+: >"$AGGREGATE_LOG"
+check_evidence
+assert_output_contains "check_evidence accepts a 1777 log dir" \
+  "evidence.log_perms" "$CHECK_RESULTS"
+if printf '%s' "$CHECK_RESULTS" | grep -q "evidence.log_perms${CHECK_SEP}ok"; then
+  pass "evidence.log_perms is ok on a 1777 dir"
+else
+  fail "evidence.log_perms not ok on a 1777 dir"
+fi
+LOG_ROOT=$LOG_ROOT_SAVED
+AGGREGATE_LOG="$LOG_ROOT/events.jsonl"
+
+# ===========================================================================
 printf '\n'
 summary
