@@ -103,6 +103,17 @@ wait_ready() {
         "$npm_code" "$pypi_code" "$go_code" "$cargo_code"
       return 0
     fi
+    # A crash-looping backend never becomes ready, and nginx refuses to load
+    # its whole config when any one upstream name does not resolve -- so one
+    # bad service takes all four vhosts down. Say so after a minute instead of
+    # burning the full timeout on a stack that cannot recover.
+    if [ "$i" -gt 20 ] && \
+       compose ps --format '{{.Name}} {{.State}}' 2>/dev/null | grep -qi 'restarting'; then
+      printf 'a container is not staying up:\n' >&2
+      compose ps >&2
+      compose logs --tail 40 >&2
+      return 1
+    fi
     i=$((i + 1))
     sleep 3
   done

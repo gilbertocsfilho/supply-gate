@@ -72,9 +72,15 @@ services:
       ATHENS_DOWNLOAD_MODE: sync
       ATHENS_SINGLE_FLIGHT_TYPE: in-memory
     volumes:
-      - ./docker/athens/config.toml:/etc/athens/config.toml:ro
+      # /config/config.toml is where the image's own default command already
+      # looks. Mounting it there means no `command:` override is needed at
+      # all -- the previous one (`["proxy", ...]`) named a binary that does
+      # not exist in the image (it is `athens-proxy`), so tini died with
+      # "exec proxy failed: No such file or directory" on every start, nginx
+      # then refused to load with "host not found in upstream athens", and
+      # the whole stack came down with it.
+      - ./docker/athens/config.toml:/config/config.toml:ro
       - athens_storage:/var/lib/athens
-    command: ["proxy", "-config_file=/etc/athens/config.toml"]
     networks:
       - supply_chain_net
     restart: unless-stopped
@@ -89,7 +95,11 @@ services:
       KELLNR_DATABASE__PATH: /var/lib/kellnr/kellnr.sqlite
       KELLNR_STORAGE__TYPE: local
       KELLNR_STORAGE__LOCAL__PATH: /var/lib/kellnr/crates
-      KELLNR_LOG__FORMAT: plain
+      # kellnr's log format is an enum: compact | pretty | json. "plain" is
+      # not one of them, and kellnr panics on an unknown value ("Cannot read
+      # config: error trying to deserialize log format"), so the container
+      # crash-looped on every start.
+      KELLNR_LOG__FORMAT: compact
       KELLNR_LOG__LEVEL: info
     volumes:
       - kellnr_data:/var/lib/kellnr
